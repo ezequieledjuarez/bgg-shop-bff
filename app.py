@@ -1,42 +1,40 @@
-# bgg-shop-bff/app.py
-from flask import Flask, jsonify, request
+from flask import Flask
 from flask_cors import CORS
-from src.proxy import UpstreamError, list_products
+from src.controllers import (
+    auth_request,
+    health as health_controller,
+    products as products_controller,
+)
+from src.services import authenticate_account, list_products, register_account
 
 app = Flask(__name__)
 allowed_origins = ("http://localhost:3000", "http://127.0.0.1:3000")
 CORS(
     app,
     resources={r"/api/*": {"origins": allowed_origins}},
-    methods=["GET", "OPTIONS"],
+    methods=["GET", "POST", "OPTIONS"],
     allow_headers=["Content-Type", "Authorization"],
 )
 
 
 @app.route("/health", methods=["GET"])
 def health():
-    return jsonify({"status": "healthy"}), 200
+    return health_controller()
 
 
 @app.route("/api/v1/products", methods=["GET"])
 def products():
-    try:
-        page = request.args.get("page", 1)
-        return jsonify(list_products(
-            page=request.args.get("page", 1),
-            page_size=request.args.get("page_size", 20),
-            search=request.args.get("search"),
-            year_published=request.args.get("year_published"),
-            min_players=request.args.get("min_players"),
-            max_players=request.args.get("max_players"),
-            category_id=request.args.get("category_id"),
-            price_min=request.args.get("price_min"),
-            price_max=request.args.get("price_max"),
-        )), 200
-    except ValueError as exc:
-        return jsonify({"error": str(exc)}), 400
-    except UpstreamError as exc:
-        return jsonify({"error": "upstream GraphQL request failed", "detail": str(exc)}), 502
+    return products_controller(list_products)
+
+
+@app.route("/api/v1/auth/register", methods=["POST"])
+def register():
+    return auth_request(register_account, 201)
+
+
+@app.route("/api/v1/auth/login", methods=["POST"])
+def login():
+    return auth_request(authenticate_account, 200)
 
 
 if __name__ == "__main__":
