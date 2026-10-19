@@ -2,18 +2,25 @@ openapi: 3.2.0
 info:
   title: BGG Shop BFF API
   version: 1.0.0
-  description: REST API exposed by the BFF for the board-game catalog.
+  description: REST API exposed by the BFF for the board-game catalog and CU-C02 filters.
 paths:
   /api/v1/products:
     get:
       tags:
         - Products
-      summary: List board-game products
-      description: Returns a paginated collection of products available in the catalog.
+      summary: List and filter board-game products
+      description: Returns a paginated collection filtered by optional catalog criteria.
       operationId: listProducts
       parameters:
         - $ref: '#/components/parameters/Page'
         - $ref: '#/components/parameters/PageSize'
+        - $ref: '#/components/parameters/Search'
+        - $ref: '#/components/parameters/YearPublished'
+        - $ref: '#/components/parameters/MinPlayers'
+        - $ref: '#/components/parameters/MaxPlayers'
+        - $ref: '#/components/parameters/CategoryId'
+        - $ref: '#/components/parameters/PriceMin'
+        - $ref: '#/components/parameters/PriceMax'
       responses:
         '200':
           description: Paginated product collection.
@@ -41,7 +48,7 @@ paths:
                 total: 1
                 total_pages: 1
         '400':
-          description: The pagination parameters are invalid.
+          description: The pagination or filter parameters are invalid.
           content:
             application/json:
               schema:
@@ -59,6 +66,68 @@ paths:
                 detail: GraphQL upstream returned errors
 components:
   parameters:
+    Search:
+      name: search
+      in: query
+      required: false
+      description: Case-insensitive search over product name or publisher.
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 200
+    YearPublished:
+      name: year_published
+      in: query
+      required: false
+      description: Exact publication year.
+      schema:
+        type: integer
+        minimum: 0
+        maximum: 9999
+    MinPlayers:
+      name: min_players
+      in: query
+      required: false
+      description: Minimum requested player count.
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 999
+    MaxPlayers:
+      name: max_players
+      in: query
+      required: false
+      description: Maximum requested player count.
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 999
+    CategoryId:
+      name: category_id
+      in: query
+      required: false
+      description: Category identifier (1 strategy, 2 thematic, 3 family).
+      schema:
+        type: integer
+        minimum: 1
+    PriceMin:
+      name: price_min
+      in: query
+      required: false
+      description: Inclusive minimum price.
+      schema:
+        type: number
+        format: double
+        minimum: 0
+    PriceMax:
+      name: price_max
+      in: query
+      required: false
+      description: Inclusive maximum price.
+      schema:
+        type: number
+        format: double
+        minimum: 0
     Page:
       name: page
       in: query
