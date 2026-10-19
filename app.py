@@ -1,10 +1,7 @@
 from flask import Flask
 from flask_cors import CORS
-from src.controllers import (
-    auth_request,
-    health as health_controller,
-    products as products_controller,
-)
+from src.controllers import auth_request, health as health_controller
+from src.controllers import products as products_controller
 from src.services import authenticate_account, list_products, register_account
 
 app = Flask(__name__)
