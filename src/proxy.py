@@ -8,7 +8,112 @@ DEFAULT_GRAPHQL_URL = "http://localhost:8000/graphql/"
 
 
 class UpstreamError(Exception):
-    pass
+    def __init__(self, message, code="UPSTREAM_ERROR"):
+        super().__init__(message)
+        self.code = code
+
+
+def _required_text(payload, name, minimum=1, maximum=254):
+    value = payload.get(name)
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"{name} is required")
+    value = value.strip()
+    if len(value) < minimum or len(value) > maximum:
+        raise ValueError(f"{name} has an invalid length")
+    return value
+
+
+def _auth_request(query, variables):
+    try:
+        response = requests.post(
+            os.getenv("SALEOR_GRAPHQL_URL", DEFAULT_GRAPHQL_URL),
+            json={"query": query, "variables": variables},
+            timeout=10,
+        )
+        response.raise_for_status()
+        payload = response.json()
+    except (requests.RequestException, ValueError) as exc:
+        raise UpstreamError(str(exc)) from exc
+    if payload.get("errors"):
+        raise UpstreamError("GraphQL upstream returned errors")
+    return payload
+
+
+def _auth_result(payload, field):
+    result = (payload.get("data") or {}).get(field)
+    if not isinstance(result, dict):
+        raise UpstreamError("GraphQL upstream returned an invalid authentication payload")
+    errors = result.get("errors") or []
+    if errors:
+        code = errors[0].get("code")
+        if code in ("DUPLICATE_EMAIL", "EMAIL_EXISTS", "UNIQUE"):
+            raise UpstreamError("The email is already registered", "EMAIL_EXISTS")
+        if code in ("INVALID_CREDENTIALS", "INVALID"):
+            raise UpstreamError("Invalid credentials", "INVALID_CREDENTIALS")
+        raise UpstreamError("GraphQL authentication failed")
+    user = result.get("user")
+    if not isinstance(user, dict):
+        raise UpstreamError("GraphQL upstream returned no authenticated user")
+    response = {
+        "user": {
+            "id": user["id"],
+            "email": user["email"],
+            "first_name": user["firstName"],
+            "last_name": user["lastName"],
+            "is_active": user["isActive"],
+        },
+    }
+    tokens = result.get("tokens")
+    if tokens is not None:
+        response["session"] = {
+            "access_token": tokens.get("token"),
+            "refresh_token": tokens.get("refreshToken"),
+            "csrf_token": tokens.get("csrfToken"),
+        }
+    return response
+
+
+def register_account(payload):
+    email = _required_text(payload, "email").lower()
+    password = _required_text(payload, "password", 8, 128)
+    first_name = _required_text(payload, "first_name", 1, 150)
+    last_name = _required_text(payload, "last_name", 1, 150)
+    if "@" not in email:
+        raise ValueError("email must be valid")
+    query = """
+    mutation Register($input: RegisterInput!) {
+      register(input: $input) {
+        user { id email firstName lastName isActive }
+        tokens { token refreshToken csrfToken }
+        errors { field code message }
+      }
+    }
+    """
+    return _auth_result(_auth_request(query, {
+        "input": {"email": email, "password": password, "firstName": first_name, "lastName": last_name}
+    }), "register")
+
+
+def authenticate_account(payload):
+    email = _required_text(payload, "email").lower()
+    password = _required_text(payload, "password", 1, 128)
+    if "@" not in email:
+        raise ValueError("email must be valid")
+    query = """
+    mutation Login($input: LoginInput!) {
+      login(input: $input) {
+        user { id email firstName lastName isActive }
+        tokens { token refreshToken csrfToken }
+        errors { field code message }
+      }
+    }
+    """
+    result = _auth_result(_auth_request(query, {
+        "input": {"email": email, "password": password}
+    }), "login")
+    if "session" not in result:
+        raise UpstreamError("GraphQL login returned no session")
+    return result
 
 
 def _pagination_value(value, name):

@@ -34,6 +34,17 @@ El BFF es el límite REST entre el cliente y el Core:
 
 ## Servicios expuestos
 
+### `POST /api/v1/auth/register` y `POST /api/v1/auth/login`
+
+El BFF expone registro y login con credenciales locales y adapta las
+mutaciones GraphQL del Core a REST. El registro responde `201` sin sesión; el
+login responde `200` con usuario y tokens. Los errores públicos son `400`,
+`401`, `409` y `502`.
+
+La especificación completa del caso de uso, incluyendo ejemplos, mapeos y
+decisiones de seguridad, está en
+[`docs/CU-C01-AUTHENTICATION-CHANGES.md`](../docs/CU-C01-AUTHENTICATION-CHANGES.md).
+
 ### `GET /health`
 
 No requiere parámetros y responde `200` con:
@@ -102,8 +113,9 @@ producto contiene además `name`, `min_players`, `max_players`, `min_age`,
 El BFF traduce estos parámetros a argumentos GraphQL `camelCase`, convierte la
 respuesta a `snake_case` y responde `400` para validación inválida o `502` si
 falla el Core. Permite CORS desde `http://localhost:3000` y
-`http://127.0.0.1:3000`. No expone operaciones de
-autenticación, carrito, checkout, pedidos ni mutaciones.
+`http://127.0.0.1:3000`. Además expone las operaciones de autenticación
+documentadas al comienzo de esta sección. Carrito, checkout, pedidos y otras
+mutaciones de compra todavía no están expuestos.
 
 La implementación completa del alcance y sus limitaciones está en
 [`docs/CU-C02-FILTERING-CHANGES.md`](../docs/CU-C02-FILTERING-CHANGES.md).
