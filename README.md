@@ -9,13 +9,15 @@
 
 **`bgg-shop-bff`** es la capa de **orquestación, transformación de datos y API Gateway** de la plataforma e-commerce de juegos de mesa. 
 
-Desarrollado con **Flask** y optimizado para análisis vectorizado con **Pandas**, actúa como el único punto de entrada HTTP para el cliente web (`bgg-shop-front`). Abstrae la complejidad de la API GraphQL del Core (`bgg-shop-core`), consolidando múltiples consultas en endpoints REST eficientes, filtrando payloads y adaptando la estructura de datos a las necesidades exactas de la interfaz de usuario.
+Desarrollado con **Flask**, actúa como la API REST del catálogo para el
+cliente web (`bgg-shop-front`). Abstrae la API GraphQL del Core
+(`bgg-shop-core`) y adapta su respuesta a un contrato REST. La Home del Frontend consume este servicio para el catálogo y sus filtros.
 
 ---
 
 ## 🏗️ Arquitectura y Flujo de Datos
 
-El BFF elimina el acoplamiento directo entre la interfaz web y el motor de dominio en Django:
+El BFF es el límite REST entre el cliente y el Core:
 
 [ bgg-shop-front ]  ──(REST / JSON)──>  [ bgg-shop-bff ]  ──(GraphQL)──>  [ bgg-shop-core ]
 (React / Vite)                         (Flask Gateway)                   (Django / Saleor)
@@ -24,9 +26,87 @@ El BFF elimina el acoplamiento directo entre la interfaz web y el motor de domin
 ▼                       ▼
 [ Pandas Analytics ]    [ Health & Proxy ]
 
-* **Prevención de Over/Under-Fetching:** Solicita a Saleor Core únicamente los campos requeridos por la vista activa.
-* **Transformación al Vuelo (ETL In-Memory):** Filtra, agrega y normaliza DataFrames de productos y métricas antes de responder al cliente.
-* **Seguridad & Aislamiento:** Oculta la infraestructura de persistencia interna y el esquema interno de GraphQL del navegador web.
+* **Contrato REST:** Expone únicamente las rutas descritas abajo.
+* **Adaptación:** Traduce los nombres camelCase de GraphQL a snake_case en la
+  respuesta REST de productos.
+* **Aislamiento:** El navegador no necesita conocer la URL ni el esquema
+  GraphQL del Core.
+
+## Servicios expuestos
+
+### `GET /health`
+
+No requiere parámetros y responde `200` con:
+
+```json
+{"status": "healthy"}
+```
+
+### `GET /api/v1/products`
+
+Lista y filtra el catálogo paginado. Parámetros opcionales:
+
+| Parámetro | Tipo | Predeterminado | Restricciones |
+| --- | --- | ---: | --- |
+| `page` | entero | `1` | positivo |
+| `page_size` | entero | `20` | positivo y como máximo `100` |
+| `search` | texto | — | entre 1 y 200 caracteres |
+| `year_published` | entero | — | entre `0` y `9999` |
+| `min_players`, `max_players` | entero | — | entre `1` y `999` |
+| `category_id` | entero | — | mayor o igual que `1` |
+| `price_min`, `price_max` | número | — | no negativos |
+
+Ejemplo:
+
+```bash
+curl "http://localhost:5000/api/v1/products?page=1&page_size=20"
+```
+
+Respuesta `200`:
+
+```json
+{
+  "items": [{
+    "bgg_id": 274364,
+    "name": "Watergate",
+    "release_year": 2019,
+    "min_players": 2,
+    "max_players": 2,
+    "playing_time_minutes": 60,
+    "min_age": 12,
+    "weight": 2.25,
+    "category": ["Juegos de Estrategia"],
+    "price": 90000.0,
+    "publisher": "Salt & Pepper Games",
+    "image_url": "/media/portadas/2743640.webp"
+  }],
+  "page": 1,
+  "page_size": 20,
+  "total": 1,
+  "total_pages": 1
+}
+```
+
+Los valores reales dependen de `product_boardgame`. Una paginación inválida
+responde `400` con `{"error": "..."}`. Si el Core falla, devuelve errores
+GraphQL o entrega un payload inválido, responde `502` con `error` y, cuando
+corresponde, `detail`.
+
+### Esquema de producto y paginación
+
+La respuesta REST usa `snake_case`: `bgg_id`, `release_year`,
+`playing_time_minutes`, `image_url`, `page_size` y `total_pages`. Cada
+producto contiene además `name`, `min_players`, `max_players`, `min_age`,
+`weight`, `category` (lista de textos), `price` y `publisher`.
+
+El BFF traduce estos parámetros a argumentos GraphQL `camelCase`, convierte la
+respuesta a `snake_case` y responde `400` para validación inválida o `502` si
+falla el Core. Permite CORS desde `http://localhost:3000` y
+`http://127.0.0.1:3000`. No expone operaciones de
+autenticación, carrito, checkout, pedidos ni mutaciones.
+
+La implementación completa del alcance y sus limitaciones está en
+[`docs/CU-C02-FILTERING-CHANGES.md`](../docs/CU-C02-FILTERING-CHANGES.md).
 
 ---
 
@@ -34,7 +114,6 @@ El BFF elimina el acoplamiento directo entre la interfaz web y el motor de domin
 
 * **Lenguaje:** Python 3.12+
 * **Framework Web:** Flask 3.0+
-* **Procesamiento de Datos:** Pandas 2.2+
 * **Cliente HTTP:** `requests` / `httpx`
 * **Contenerización:** Podman / Podman Compose (Rootless)
 
