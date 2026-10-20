@@ -44,6 +44,7 @@ class ProductDto:
     weight: float
     category: list[str]
     price: float
+    quantity: int
     publisher: str
     image_url: str
 
@@ -103,6 +104,7 @@ class ProductDetailDto:
     weight: float
     category: list[str]
     price: float
+    quantity: int
     publisher: str
     image_url: str
     review_summary: dict[str, Any]

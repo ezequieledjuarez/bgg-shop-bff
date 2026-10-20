@@ -2,7 +2,7 @@ openapi: 3.2.0
 info:
   title: BGG Shop BFF API
   version: 1.0.0
-  description: REST API exposed by the BFF for the board-game catalog and CU-C02 filters.
+  description: REST API exposed by the BFF for the board-game catalog, filters, and shopping cart.
 paths:
   /api/v1/auth/register:
     post:
@@ -47,8 +47,10 @@ paths:
       tags:
         - Authentication
       summary: Authenticate a customer
-      description: Authenticates a customer using local email and password credentials.
+      description: Authenticates a customer and merges any guest cart identified by the HttpOnly cart cookie.
       operationId: loginAccount
+      parameters:
+        - $ref: '#/components/parameters/GuestCartCookie'
       requestBody:
         required: true
         content:
@@ -57,7 +59,12 @@ paths:
               $ref: '#/components/schemas/LoginRequest'
       responses:
         '200':
-          description: Customer authenticated successfully.
+          description: Customer authenticated successfully; the guest cart cookie is cleared after the Core merges it.
+          headers:
+            Set-Cookie:
+              description: Clears the guest cart cookie after successful login.
+              schema:
+                type: string
           content:
             application/json:
               schema:
@@ -117,6 +124,7 @@ paths:
                     category:
                       - Juegos de Estrategia
                     price: 90000.0
+                    quantity: 10
                     publisher: Salt & Pepper Games
                     image_url: /media/portadas/2743640.webp
                 page: 1
@@ -140,6 +148,200 @@ paths:
               example:
                 error: upstream GraphQL request failed
                 detail: GraphQL upstream returned errors
+  /api/v1/cart:
+    get:
+      tags:
+        - Cart
+      summary: Read the current cart
+      description: Reads the authenticated account cart when a Bearer token is provided; otherwise uses the opaque guest cart cookie.
+      operationId: getCart
+      parameters:
+        - $ref: '#/components/parameters/GuestCartCookie'
+      security:
+        - {}
+        - BearerAuth: []
+      responses:
+        '200':
+          description: Current cart with current prices, available stock, and any cart warnings.
+          headers:
+            Set-Cookie:
+              description: Sets or refreshes the HttpOnly guest cart cookie when the cart is anonymous.
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CartResponse'
+              example:
+                lines:
+                  - bgg_id: 274364
+                    name: Watergate
+                    quantity: 2
+                    available_stock: 10
+                    unit_price: 90000.0
+                    subtotal: 180000.0
+                total: 180000.0
+                warnings: []
+        '502':
+          description: The BFF could not obtain a valid response from Core GraphQL.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/v1/cart/items:
+    post:
+      tags:
+        - Cart
+      summary: Add a product to the cart
+      operationId: addCartItem
+      security:
+        - {}
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/GuestCartCookie'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CartItemRequest'
+      responses:
+        '200':
+          description: Product added and cart totals recalculated.
+          headers:
+            Set-Cookie:
+              description: Sets or refreshes the HttpOnly guest cart cookie when the cart is anonymous.
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CartResponse'
+        '400':
+          description: The product identifier or quantity is invalid.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: The product does not exist.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CartResponse'
+        '409':
+          description: Requested quantity exceeds current stock; the existing cart is returned with a warning.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CartResponse'
+        '502':
+          description: The BFF could not obtain a valid response from Core GraphQL.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/v1/cart/items/{bgg_id}:
+    patch:
+      tags:
+        - Cart
+      summary: Set a cart item's quantity
+      operationId: updateCartItemQuantity
+      security:
+        - {}
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/GuestCartCookie'
+        - name: bgg_id
+          in: path
+          required: true
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 2147483647
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CartQuantityRequest'
+      responses:
+        '200':
+          description: Quantity updated and cart totals recalculated.
+          headers:
+            Set-Cookie:
+              description: Sets or refreshes the HttpOnly guest cart cookie when the cart is anonymous.
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CartResponse'
+        '400':
+          description: The product identifier or quantity is invalid.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: The product does not exist.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CartResponse'
+        '409':
+          description: Requested quantity exceeds current stock; the existing cart is returned with a warning.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CartResponse'
+        '502':
+          description: The BFF could not obtain a valid response from Core GraphQL.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    delete:
+      tags:
+        - Cart
+      summary: Remove a product from the cart
+      operationId: removeCartItem
+      security:
+        - {}
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/GuestCartCookie'
+        - name: bgg_id
+          in: path
+          required: true
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 2147483647
+      responses:
+        '200':
+          description: Product removed and cart totals recalculated.
+          headers:
+            Set-Cookie:
+              description: Sets or refreshes the HttpOnly guest cart cookie when the cart is anonymous.
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CartResponse'
+        '400':
+          description: The product identifier is invalid.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '502':
+          description: The BFF could not obtain a valid response from Core GraphQL.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /api/v1/games/{slug}:
     get:
       tags:
@@ -160,6 +362,24 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ProductDetail'
+              example:
+                name: Watergate
+                release_year: 2019
+                min_players: 2
+                max_players: 2
+                playing_time_minutes: 60
+                min_age: 12
+                weight: 2.25
+                category:
+                  - Juegos de Estrategia
+                price: 90000.0
+                quantity: 10
+                publisher: Salt & Pepper Games
+                image_url: /media/portadas/2743640.webp
+                review_summary:
+                  approved_review_count: 0
+                  average_rating: null
+                approved_reviews: []
         '404':
           description: The game does not exist.
           content:
@@ -241,6 +461,13 @@ components:
       scheme: bearer
       bearerFormat: JWT
   parameters:
+    GuestCartCookie:
+      name: cart_id
+      in: cookie
+      required: false
+      description: Opaque guest cart identifier issued by the BFF in an HttpOnly, SameSite=Lax cookie. The default name is cart_id and can be changed with CART_COOKIE_NAME. Secure defaults on outside debug/development and is configurable with CART_COOKIE_SECURE. This is not a user identifier; Core selects authenticated carts from the Bearer token.
+      schema:
+        type: string
     Search:
       name: search
       in: query
@@ -325,6 +552,93 @@ components:
         default: 20
       example: 20
   schemas:
+    CartItemRequest:
+      type: object
+      required:
+        - bgg_id
+        - quantity
+      properties:
+        bgg_id:
+          type: integer
+          minimum: 1
+          maximum: 2147483647
+          description: BoardGameGeek product identifier.
+        quantity:
+          type: integer
+          minimum: 1
+          maximum: 2147483647
+    CartQuantityRequest:
+      type: object
+      required:
+        - quantity
+      properties:
+        quantity:
+          type: integer
+          minimum: 1
+          maximum: 2147483647
+    CartLine:
+      type: object
+      required:
+        - bgg_id
+        - name
+        - quantity
+        - available_stock
+        - unit_price
+        - subtotal
+      properties:
+        bgg_id:
+          type: integer
+          minimum: 1
+        name:
+          type: string
+        quantity:
+          type: integer
+          minimum: 1
+        available_stock:
+          type: integer
+          minimum: 0
+          description: Current product inventory; cart edits do not reserve stock.
+        unit_price:
+          type: number
+          format: double
+        subtotal:
+          type: number
+          format: double
+    CartWarning:
+      type: object
+      required:
+        - code
+        - message
+      properties:
+        field:
+          type: array
+          nullable: true
+          items:
+            type: string
+        code:
+          type: string
+          example: INSUFFICIENT_STOCK
+        message:
+          type: string
+    CartResponse:
+      type: object
+      required:
+        - lines
+        - total
+        - warnings
+      properties:
+        lines:
+          type: array
+          items:
+            $ref: '#/components/schemas/CartLine'
+        total:
+          type: number
+          format: double
+        warnings:
+          type: array
+          description: Core cart userErrors, including stock-limit feedback.
+          items:
+            $ref: '#/components/schemas/CartWarning'
     CreateReviewRequest:
       type: object
       required:
@@ -397,6 +711,7 @@ components:
         - price
         - publisher
         - image_url
+        - quantity
         - review_summary
         - approved_reviews
       properties:
@@ -424,6 +739,11 @@ components:
           type: string
         image_url:
           type: string
+        quantity:
+          type: integer
+          minimum: 0
+          description: Current inventory available for this product.
+          example: 10
         review_summary:
           $ref: '#/components/schemas/ReviewSummary'
         approved_reviews:
@@ -568,6 +888,7 @@ components:
         - price
         - publisher
         - image_url
+        - quantity
       properties:
         bgg_id:
           type: integer
@@ -611,6 +932,11 @@ components:
         image_url:
           type: string
           example: /media/portadas/2743640.webp
+        quantity:
+          type: integer
+          minimum: 0
+          description: Current inventory available for this product.
+          example: 10
     ProductPage:
       type: object
       required:
