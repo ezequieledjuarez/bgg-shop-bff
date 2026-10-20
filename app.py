@@ -5,7 +5,13 @@ from flask_cors import CORS
 from src.controllers import (
     add_cart_item as add_cart_item_controller,
     auth_request,
+    checkout as checkout_controller,
+    confirm_payment as confirm_payment_controller,
     create_review as create_review_controller,
+    list_orders as list_orders_controller,
+    order_detail as order_detail_controller,
+    order_invoice as order_invoice_controller,
+    retry_payment as retry_payment_controller,
     health as health_controller,
     product_detail as product_detail_controller,
     products as products_controller,
@@ -16,7 +22,13 @@ from src.controllers import (
 from src.services import (
     add_to_cart,
     authenticate_account,
+    checkout,
+    confirm_payment,
     create_review,
+    get_invoice,
+    get_order,
+    get_orders,
+    retry_payment,
     get_cart,
     get_product_detail,
     list_products,
@@ -91,6 +103,36 @@ def cart_update_item(bgg_id):
 @app.route("/api/v1/cart/items/<bgg_id>", methods=["DELETE"])
 def cart_remove_item(bgg_id):
     return remove_cart_item_controller(bgg_id, remove_from_cart)
+
+
+@app.route("/api/v1/checkout", methods=["POST"])
+def purchase_checkout():
+    return checkout_controller(checkout)
+
+
+@app.route("/api/v1/checkout/confirm", methods=["POST"])
+def purchase_confirm():
+    return confirm_payment_controller(confirm_payment)
+
+
+@app.route("/api/v1/orders", methods=["GET"])
+def purchase_orders():
+    return list_orders_controller(get_orders)
+
+
+@app.route("/api/v1/orders/<order_id>", methods=["GET"])
+def purchase_order(order_id):
+    return order_detail_controller(order_id, get_order)
+
+
+@app.route("/api/v1/orders/<order_id>/retry-payment", methods=["POST"])
+def purchase_retry_payment(order_id):
+    return retry_payment_controller(order_id, retry_payment)
+
+
+@app.route("/api/v1/orders/<order_id>/invoice", methods=["GET"])
+def purchase_invoice(order_id):
+    return order_invoice_controller(order_id, get_invoice)
 
 
 @app.route("/api/v1/auth/register", methods=["POST"])

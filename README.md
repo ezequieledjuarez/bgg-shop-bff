@@ -117,7 +117,8 @@ respuesta a `snake_case` y responde `400` para validación inválida o `502` si
 falla el Core. Permite CORS desde `http://localhost:3000` y
 `http://127.0.0.1:3000`. Además expone las operaciones de autenticación
 documentadas al comienzo de esta sección. El carrito se expone mediante las
-rutas descritas a continuación; checkout y pedidos siguen fuera del alcance.
+rutas descritas a continuación; las operaciones de compra se documentan en la
+sección siguiente.
 
 La implementación completa del alcance y sus limitaciones está en
 [`docs/CU-C02-FILTERING-CHANGES.md`](../docs/CU-C02-FILTERING-CHANGES.md).
@@ -163,6 +164,23 @@ Ejemplo de respuesta:
   "warnings": []
 }
 ```
+
+### Purchase and order endpoints
+
+All purchase and order routes require `Authorization: Bearer <access-token>`. The BFF forwards that token to Core; it never accepts a user ID and never uses Mercado Pago credentials.
+
+| Method | Route | Purpose |
+| --- | --- | --- |
+| `POST` | `/api/v1/checkout` | Create an order from the authenticated cart and return `order` plus `init_point`. |
+| `POST` | `/api/v1/checkout/confirm` | Ask Core to verify a payment ID and return the updated `order`. |
+| `GET` | `/api/v1/orders` | List the authenticated customer's orders. |
+| `GET` | `/api/v1/orders/{order_id}` | Read an owned order, including lines, totals, shipping, invoice metadata, and `payment_status_detail`. |
+| `POST` | `/api/v1/orders/{order_id}/retry-payment` | Initialize a new payment attempt for an eligible order. |
+| `GET` | `/api/v1/orders/{order_id}/invoice` | Stream the owned invoice PDF from Core. |
+
+Checkout accepts `shipping_mode` (`standard` or `pickup`) and an optional `address` with `recipient`, `street`, `city`, `postal_code`, and `phone`. Core validates required delivery fields, calculates prices, and owns order state. Payment confirmation accepts an order UUID and a non-empty, length-limited payment identifier containing only safe characters; the browser never supplies a Mercado Pago access token.
+
+Order responses use `snake_case` and include snapshot line prices, currency, shipping fields, payment state and its provider detail, and invoice number/date/total when issued. Missing or invalid credentials return `401`; invalid request data returns `400`; an unowned or missing order returns `404`; payment configuration and Core failures are reported as `503` and `502` respectively. The invoice route validates UUIDs before constructing the Core URL, forwards the same bearer token, streams `application/pdf` with the upstream attachment header, and preserves Core `404` responses.
 
 ---
 
