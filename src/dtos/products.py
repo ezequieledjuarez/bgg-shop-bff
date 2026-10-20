@@ -90,3 +90,53 @@ class ProductPageDto:
             "total": self.total,
             "total_pages": self.total_pages,
         }
+
+
+@dataclass(frozen=True)
+class ProductDetailDto:
+    name: str
+    release_year: int
+    min_players: int
+    max_players: int
+    playing_time_minutes: int
+    min_age: int
+    weight: float
+    category: list[str]
+    price: float
+    publisher: str
+    image_url: str
+    review_summary: dict[str, Any]
+    approved_reviews: list[dict[str, Any]]
+
+    @classmethod
+    def from_dict(cls, value: dict[str, Any]) -> "ProductDetailDto":
+        return cls(**value)
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
+class CreateReviewRequestDto:
+    rating: Any
+    body: Any
+
+    @classmethod
+    def from_payload(cls, payload: Any) -> "CreateReviewRequestDto":
+        if not isinstance(payload, dict):
+            raise ValueError("Request body must be a JSON object")
+        return cls(rating=payload.get("rating"), body=payload.get("body"))
+
+
+@dataclass(frozen=True)
+class CreateReviewResponseDto:
+    created: bool
+    status: str
+    created_at: str
+
+    @classmethod
+    def from_dict(cls, value: dict[str, Any]) -> "CreateReviewResponseDto":
+        return cls(**value)
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)

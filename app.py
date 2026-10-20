@@ -1,8 +1,19 @@
 from flask import Flask
 from flask_cors import CORS
-from src.controllers import auth_request, health as health_controller
-from src.controllers import products as products_controller
-from src.services import authenticate_account, list_products, register_account
+from src.controllers import (
+    auth_request,
+    create_review as create_review_controller,
+    health as health_controller,
+    product_detail as product_detail_controller,
+    products as products_controller,
+)
+from src.services import (
+    authenticate_account,
+    create_review,
+    get_product_detail,
+    list_products,
+    register_account,
+)
 
 app = Flask(__name__)
 allowed_origins = ("http://localhost:3000", "http://127.0.0.1:3000")
@@ -22,6 +33,16 @@ def health():
 @app.route("/api/v1/products", methods=["GET"])
 def products():
     return products_controller(list_products)
+
+
+@app.route("/api/v1/games/<slug>", methods=["GET"])
+def game_detail(slug):
+    return product_detail_controller(slug, get_product_detail)
+
+
+@app.route("/api/v1/games/<slug>/reviews", methods=["POST"])
+def game_review(slug):
+    return create_review_controller(slug, create_review)
 
 
 @app.route("/api/v1/auth/register", methods=["POST"])

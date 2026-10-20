@@ -265,3 +265,92 @@ def list_products(
         }
     except (KeyError, TypeError) as exc:
         raise UpstreamError("GraphQL upstream returned an invalid product payload") from exc
+
+
+def _graphql_request(query, variables, token=None):
+    headers = {"Authorization": token} if token else {}
+    try:
+        response = requests.post(
+            os.getenv("SALEOR_GRAPHQL_URL", DEFAULT_GRAPHQL_URL),
+            json={"query": query, "variables": variables},
+            headers=headers,
+            timeout=10,
+        )
+        response.raise_for_status()
+        payload = response.json()
+    except (requests.RequestException, ValueError) as exc:
+        raise UpstreamError(str(exc)) from exc
+    return payload
+
+
+def get_product_detail(slug):
+    query = """
+    query ProductBySlug($slug: String!) {
+      productBySlug(slug: $slug) {
+        name releaseYear minPlayers maxPlayers playingTimeMinutes minAge
+        weight category price publisher imageUrl
+        reviewSummary { approvedReviewCount averageRating }
+        approvedReviews { rating body createdAt }
+      }
+    }
+    """
+    payload = _graphql_request(query, {"slug": slug})
+    if payload.get("errors"):
+        raise UpstreamError("GraphQL upstream returned errors")
+    product = (payload.get("data") or {}).get("productBySlug")
+    if product is None:
+        raise UpstreamError("The requested game does not exist", "PRODUCT_NOT_FOUND")
+    try:
+        return {
+            "name": product["name"],
+            "weight": product["weight"],
+            "category": product["category"],
+            "price": product["price"],
+            "publisher": product["publisher"],
+            "release_year": product["releaseYear"],
+            "min_players": product["minPlayers"],
+            "max_players": product["maxPlayers"],
+            "playing_time_minutes": product["playingTimeMinutes"],
+            "min_age": product["minAge"],
+            "image_url": product["imageUrl"],
+            "review_summary": {
+                "approved_review_count": product["reviewSummary"]["approvedReviewCount"],
+                "average_rating": product["reviewSummary"]["averageRating"],
+            },
+            "approved_reviews": [
+                {"rating": item["rating"], "body": item["body"], "created_at": item["createdAt"]}
+                for item in product["approvedReviews"]
+            ],
+        }
+    except (KeyError, TypeError) as exc:
+        raise UpstreamError("GraphQL upstream returned an invalid product payload") from exc
+
+
+def create_review(slug, rating, body, token):
+    query = """
+    mutation CreateReview($input: CreateReviewInput!) {
+      createReview(input: $input) {
+        created status createdAt
+        userErrors { field code message }
+      }
+    }
+    """
+    payload = _graphql_request(
+        query,
+        {"input": {"productSlug": slug, "rating": rating, "body": body}},
+        token,
+    )
+    if payload.get("errors"):
+        raise UpstreamError("GraphQL upstream returned errors")
+    result = (payload.get("data") or {}).get("createReview")
+    if not isinstance(result, dict):
+        raise UpstreamError("GraphQL upstream returned an invalid review payload")
+    errors = result.get("userErrors") or []
+    if errors:
+        error = errors[0]
+        raise UpstreamError(error.get("message", "Review could not be created"), error.get("code"))
+    return {
+        "created": result["created"],
+        "status": result["status"],
+        "created_at": result["createdAt"],
+    }

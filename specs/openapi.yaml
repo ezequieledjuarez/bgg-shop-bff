@@ -140,6 +140,90 @@ paths:
               example:
                 error: upstream GraphQL request failed
                 detail: GraphQL upstream returned errors
+  /api/v1/games/{slug}:
+    get:
+      tags:
+        - Games
+      summary: Get a board-game detail by slug
+      operationId: getGameDetail
+      parameters:
+        - name: slug
+          in: path
+          required: true
+          schema:
+            type: string
+            minLength: 1
+      responses:
+        '200':
+          description: Product detail with approved reviews.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProductDetail'
+        '404':
+          description: The game does not exist.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '502':
+          description: The Core GraphQL service is unavailable.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/v1/games/{slug}/reviews:
+    post:
+      tags:
+        - Reviews
+      summary: Submit a board-game review
+      operationId: createGameReview
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: slug
+          in: path
+          required: true
+          schema:
+            type: string
+            minLength: 1
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateReviewRequest'
+      responses:
+        '201':
+          description: Review created and awaiting moderation.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CreateReviewResponse'
+        '400':
+          description: Review data is invalid.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Authentication is required.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: The game does not exist.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: The user already reviewed this game.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 components:
   securitySchemes:
     BearerAuth:
@@ -231,6 +315,111 @@ components:
         default: 20
       example: 20
   schemas:
+    CreateReviewRequest:
+      type: object
+      required:
+        - rating
+        - body
+      properties:
+        rating:
+          type: integer
+          minimum: 1
+          maximum: 5
+        body:
+          type: string
+          minLength: 1
+          maxLength: 2000
+    CreateReviewResponse:
+      type: object
+      required:
+        - created
+        - status
+        - created_at
+      properties:
+        created:
+          type: boolean
+        status:
+          type: string
+          enum:
+            - PENDING
+        created_at:
+          type: string
+          format: date-time
+    ReviewSummary:
+      type: object
+      required:
+        - approved_review_count
+      properties:
+        approved_review_count:
+          type: integer
+          minimum: 0
+        average_rating:
+          type: number
+          format: double
+          nullable: true
+    ApprovedReview:
+      type: object
+      required:
+        - rating
+        - body
+        - created_at
+      properties:
+        rating:
+          type: integer
+          minimum: 1
+          maximum: 5
+        body:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+    ProductDetail:
+      type: object
+      required:
+        - name
+        - release_year
+        - min_players
+        - max_players
+        - playing_time_minutes
+        - min_age
+        - weight
+        - category
+        - price
+        - publisher
+        - image_url
+        - review_summary
+        - approved_reviews
+      properties:
+        name:
+          type: string
+        release_year:
+          type: integer
+        min_players:
+          type: integer
+        max_players:
+          type: integer
+        playing_time_minutes:
+          type: integer
+        min_age:
+          type: integer
+        weight:
+          type: number
+        category:
+          type: array
+          items:
+            type: string
+        price:
+          type: number
+        publisher:
+          type: string
+        image_url:
+          type: string
+        review_summary:
+          $ref: '#/components/schemas/ReviewSummary'
+        approved_reviews:
+          type: array
+          items:
+            $ref: '#/components/schemas/ApprovedReview'
     RegisterRequest:
       type: object
       required:
