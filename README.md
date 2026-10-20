@@ -88,6 +88,7 @@ Respuesta `200`:
     "weight": 2.25,
     "category": ["Juegos de Estrategia"],
     "price": 90000.0,
+    "quantity": 10,
     "publisher": "Salt & Pepper Games",
     "image_url": "/media/portadas/2743640.webp"
   }],
@@ -108,17 +109,60 @@ corresponde, `detail`.
 La respuesta REST usa `snake_case`: `bgg_id`, `release_year`,
 `playing_time_minutes`, `image_url`, `page_size` y `total_pages`. Cada
 producto contiene además `name`, `min_players`, `max_players`, `min_age`,
-`weight`, `category` (lista de textos), `price` y `publisher`.
+`weight`, `category` (lista de textos), `price`, `quantity` (stock actual), y
+`publisher`.
 
 El BFF traduce estos parámetros a argumentos GraphQL `camelCase`, convierte la
 respuesta a `snake_case` y responde `400` para validación inválida o `502` si
 falla el Core. Permite CORS desde `http://localhost:3000` y
 `http://127.0.0.1:3000`. Además expone las operaciones de autenticación
-documentadas al comienzo de esta sección. Carrito, checkout, pedidos y otras
-mutaciones de compra todavía no están expuestos.
+documentadas al comienzo de esta sección. El carrito se expone mediante las
+rutas descritas a continuación; checkout y pedidos siguen fuera del alcance.
 
 La implementación completa del alcance y sus limitaciones está en
 [`docs/CU-C02-FILTERING-CHANGES.md`](../docs/CU-C02-FILTERING-CHANGES.md).
+
+### `GET /api/v1/cart` y operaciones de artículos
+
+| Método | Ruta | Entrada | Resultado |
+| --- | --- | --- | --- |
+| `GET` | `/api/v1/cart` | Cookie de carrito opcional | Carrito actual |
+| `POST` | `/api/v1/cart/items` | `bgg_id`, `quantity` | Agrega esa cantidad |
+| `PATCH` | `/api/v1/cart/items/{bgg_id}` | `quantity` | Establece la cantidad solicitada |
+| `DELETE` | `/api/v1/cart/items/{bgg_id}` | — | Elimina el artículo |
+
+Las cantidades de alta y actualización deben ser enteros positivos; el Core
+valida el stock vigente. Todas las respuestas de carrito contienen `lines`,
+`total` y `warnings`; cada línea incluye `bgg_id`, `name`, `quantity`,
+`available_stock`, `unit_price` y `subtotal`. Un exceso de stock responde `409`
+con el carrito sin cambios y el error de Core dentro de `warnings`. Las
+solicitudes inválidas responden `400` y un fallo del Core responde `502`.
+
+Para compradores anónimos, el BFF emite el identificador opaco del Core en una
+cookie `cart_id` HttpOnly, `SameSite=Lax`; no acepta identificadores de usuario
+del cliente. La cookie es `Secure` fuera de debug/desarrollo y se puede ajustar
+con `CART_COOKIE_SECURE`; `CART_COOKIE_NAME` permite cambiar su nombre. Las
+solicitudes autenticadas reenvían el encabezado `Authorization: Bearer ...` al
+Core, que determina el carrito de cuenta. En login, el BFF envía la cookie como
+`guestCartId` para combinar el carrito anónimo y la elimina solo si el login es
+exitoso.
+
+Ejemplo de respuesta:
+
+```json
+{
+  "lines": [{
+    "bgg_id": 274364,
+    "name": "Watergate",
+    "quantity": 2,
+    "available_stock": 10,
+    "unit_price": 90000.0,
+    "subtotal": 180000.0
+  }],
+  "total": 180000.0,
+  "warnings": []
+}
+```
 
 ---
 

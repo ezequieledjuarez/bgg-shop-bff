@@ -108,9 +108,10 @@ def authenticate_account(payload):
       }
     }
     """
-    result = _auth_result(_auth_request(query, {
-        "input": {"email": email, "password": password}
-    }), "login")
+    login_input = {"email": email, "password": password}
+    if payload.get("guest_cart_id"):
+        login_input["guestCartId"] = payload["guest_cart_id"]
+    result = _auth_result(_auth_request(query, {"input": login_input}), "login")
     if "session" not in result:
         raise UpstreamError("GraphQL login returned no session")
     return result
@@ -212,6 +213,7 @@ def list_products(
           weight
           category
           price
+          quantity
           publisher
           imageUrl
         }
@@ -253,6 +255,7 @@ def list_products(
                     "weight": item["weight"],
                     "category": item["category"],
                     "price": item["price"],
+                    "quantity": item["quantity"],
                     "publisher": item["publisher"],
                     "image_url": item["imageUrl"],
                 }
@@ -288,7 +291,7 @@ def get_product_detail(slug):
     query ProductBySlug($slug: String!) {
       productBySlug(slug: $slug) {
         name releaseYear minPlayers maxPlayers playingTimeMinutes minAge
-        weight category price publisher imageUrl
+        weight category price quantity publisher imageUrl
         reviewSummary { approvedReviewCount averageRating }
         approvedReviews { rating body createdAt }
       }
@@ -306,6 +309,7 @@ def get_product_detail(slug):
             "weight": product["weight"],
             "category": product["category"],
             "price": product["price"],
+            "quantity": product["quantity"],
             "publisher": product["publisher"],
             "release_year": product["releaseYear"],
             "min_players": product["minPlayers"],
@@ -354,3 +358,91 @@ def create_review(slug, rating, body, token):
         "status": result["status"],
         "created_at": result["createdAt"],
     }
+
+
+def _cart_result(cart, user_errors=None):
+    if not isinstance(cart, dict):
+        raise UpstreamError("GraphQL upstream returned an invalid cart payload")
+    try:
+        return {
+            "cart_id": cart["cartId"],
+            "lines": [
+                {
+                    "bgg_id": line["bggId"],
+                    "name": line["name"],
+                    "quantity": line["quantity"],
+                    "available_stock": line["inventoryQuantity"],
+                    "unit_price": line["unitPrice"],
+                    "subtotal": line["subtotal"],
+                }
+                for line in cart["lines"]
+            ],
+            "total": cart["subtotal"],
+            "warnings": [
+                {
+                    "field": error.get("field"),
+                    "code": error["code"],
+                    "message": error["message"],
+                }
+                for error in (user_errors or [])
+            ],
+        }
+    except (KeyError, TypeError) as exc:
+        raise UpstreamError("GraphQL upstream returned an invalid cart payload") from exc
+
+
+def get_cart(cart_id=None, token=None):
+    query = """
+    query Cart($cartId: ID) {
+      cart(cartId: $cartId) {
+        cartId subtotal
+        lines { bggId name quantity inventoryQuantity unitPrice subtotal }
+      }
+    }
+    """
+    payload = _graphql_request(query, {"cartId": cart_id}, token)
+    if payload.get("errors"):
+        raise UpstreamError("GraphQL upstream returned errors")
+    cart = (payload.get("data") or {}).get("cart")
+    return _cart_result(cart)
+
+
+def _cart_mutation(field, bgg_id, quantity, cart_id, token):
+    if field == "removeFromCart":
+        arguments = "$bggId: Int!, $cartId: ID"
+        call_arguments = "bggId: $bggId, cartId: $cartId"
+    else:
+        if quantity is None:
+            raise ValueError("quantity is required")
+        arguments = "$bggId: Int!, $quantity: Int!, $cartId: ID"
+        call_arguments = "bggId: $bggId, quantity: $quantity, cartId: $cartId"
+    query = f"""
+    mutation CartMutation({arguments}) {{
+      {field}({call_arguments}) {{
+        cart {{ cartId subtotal lines {{ bggId name quantity inventoryQuantity unitPrice subtotal }} }}
+        userErrors {{ field code message }}
+      }}
+    }}
+    """
+    variables = {"bggId": bgg_id, "cartId": cart_id}
+    if quantity is not None:
+        variables["quantity"] = quantity
+    payload = _graphql_request(query, variables, token)
+    if payload.get("errors"):
+        raise UpstreamError("GraphQL upstream returned errors")
+    result = (payload.get("data") or {}).get(field)
+    if not isinstance(result, dict):
+        raise UpstreamError("GraphQL upstream returned an invalid cart payload")
+    return _cart_result(result.get("cart"), result.get("userErrors"))
+
+
+def add_to_cart(bgg_id, quantity, cart_id=None, token=None):
+    return _cart_mutation("addToCart", bgg_id, quantity, cart_id, token)
+
+
+def update_cart_quantity(bgg_id, quantity, cart_id=None, token=None):
+    return _cart_mutation("updateCartQuantity", bgg_id, quantity, cart_id, token)
+
+
+def remove_from_cart(bgg_id, cart_id=None, token=None):
+    return _cart_mutation("removeFromCart", bgg_id, None, cart_id, token)

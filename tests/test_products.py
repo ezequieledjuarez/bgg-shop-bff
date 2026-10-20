@@ -1,7 +1,7 @@
 from unittest.mock import MagicMock, patch
 
 from app import app
-from src.proxy import UpstreamError, list_products
+from src.proxy import UpstreamError, get_product_detail, list_products
 
 
 def test_products_returns_rest_contract():
@@ -108,7 +108,7 @@ def test_graphql_response_is_mapped_to_rest_contract():
                     "bggId": 7, "name": "Game", "releaseYear": 2020,
                     "minPlayers": 2, "maxPlayers": 4,
                     "playingTimeMinutes": 60, "minAge": 10, "weight": 2.5,
-                    "category": ["Strategy"], "price": 12.5,
+                    "category": ["Strategy"], "price": 12.5, "quantity": 6,
                     "publisher": "Pub", "imageUrl": "/game.jpg",
                 }],
                 "page": 2, "pageSize": 1, "total": 3, "totalPages": 3,
@@ -128,9 +128,11 @@ def test_graphql_response_is_mapped_to_rest_contract():
             price_max=20,
         )
 
-    assert result["items"][0]["bgg_id"] == 7
-    assert result["page_size"] == 1
     payload = post.call_args.kwargs["json"]
+    assert result["items"][0]["bgg_id"] == 7
+    assert result["items"][0]["quantity"] == 6
+    assert result["page_size"] == 1
+    assert "quantity" in payload["query"]
     assert payload["variables"]["search"] == "game"
     assert payload["variables"]["yearPublished"] == 2020
     assert payload["variables"]["minPlayers"] == 2
@@ -138,3 +140,35 @@ def test_graphql_response_is_mapped_to_rest_contract():
     assert payload["variables"]["categoryId"] == 1
     assert payload["variables"]["priceMin"] == 10
     assert payload["variables"]["priceMax"] == 20
+
+
+def test_product_detail_exposes_inventory_quantity():
+    response = MagicMock()
+    response.json.return_value = {"data": {"productBySlug": {
+        "name": "Game", "releaseYear": 2020, "minPlayers": 2, "maxPlayers": 4,
+        "playingTimeMinutes": 60, "minAge": 10, "weight": 2.5,
+        "category": ["Strategy"], "price": 12.5, "quantity": 6,
+        "publisher": "Pub", "imageUrl": "/game.jpg",
+        "reviewSummary": {"approvedReviewCount": 0, "averageRating": None},
+        "approvedReviews": [],
+    }}}
+    with patch("src.proxy.requests.post", return_value=response) as post:
+        result = get_product_detail("game")
+
+    assert result["quantity"] == 6
+    assert "quantity" in post.call_args.kwargs["json"]["query"]
+
+
+def test_product_detail_rest_response_includes_inventory_quantity():
+    with patch("app.get_product_detail", return_value={
+        "name": "Game", "release_year": 2020, "min_players": 2, "max_players": 4,
+        "playing_time_minutes": 60, "min_age": 10, "weight": 2.5,
+        "category": ["Strategy"], "price": 12.5, "quantity": 6,
+        "publisher": "Pub", "image_url": "/game.jpg",
+        "review_summary": {"approved_review_count": 0, "average_rating": None},
+        "approved_reviews": [],
+    }):
+        response = app.test_client().get("/api/v1/games/game")
+
+    assert response.status_code == 200
+    assert response.get_json()["quantity"] == 6
