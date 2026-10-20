@@ -33,4 +33,9 @@ def create_review(slug, service):
         }
         if exc.code in statuses:
             return jsonify({"errors": [{"code": exc.code, "message": str(exc)}]}), statuses[exc.code]
-        return jsonify({"error": "upstream GraphQL request failed"}), 502
+        return jsonify({
+            "errors": [{
+                "code": "UPSTREAM_ERROR",
+                "message": "upstream GraphQL request failed",
+            }],
+        }), 502

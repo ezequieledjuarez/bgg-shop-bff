@@ -224,6 +224,16 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '502':
+          description: The BFF could not obtain a valid response from the Core GraphQL service.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthErrorResponse'
+              example:
+                errors:
+                  - code: UPSTREAM_ERROR
+                    message: upstream GraphQL request failed
 components:
   securitySchemes:
     BearerAuth:
