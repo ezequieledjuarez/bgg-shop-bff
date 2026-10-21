@@ -95,6 +95,7 @@ class ProductPageDto:
 
 @dataclass(frozen=True)
 class ProductDetailDto:
+    bgg_id: int
     name: str
     release_year: int
     min_players: int

@@ -363,6 +363,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ProductDetail'
               example:
+                bgg_id: 274364
                 name: Watergate
                 release_year: 2019
                 min_players: 2
@@ -1118,6 +1119,7 @@ components:
     ProductDetail:
       type: object
       required:
+        - bgg_id
         - name
         - release_year
         - min_players
@@ -1133,6 +1135,11 @@ components:
         - review_summary
         - approved_reviews
       properties:
+        bgg_id:
+          type: integer
+          minimum: 1
+          description: Public BoardGameGeek product identifier.
+          example: 274364
         name:
           type: string
         release_year:

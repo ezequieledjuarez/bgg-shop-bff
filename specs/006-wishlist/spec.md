@@ -29,6 +29,14 @@ Wishlist membership is independent of the cart. Adding a Wishlist product to
 the cart does not remove it. Core owns Wishlist cleanup after a purchase is
 confirmed as paid.
 
+## Product detail identity
+
+`GET /api/v1/games/{slug}` includes the public BoardGameGeek identifier as the
+required `bgg_id` field. The Frontend uses this value to save a game to Wishlist
+regardless of whether the detail page was opened from catalog navigation or a
+direct URL. Core's GraphQL `ProductDetail.bggId` is adapted to this REST field;
+no internal identifiers are exposed.
+
 ## Evidence
 
 - Contract: [OpenAPI](../openapi.yaml)

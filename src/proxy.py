@@ -307,7 +307,7 @@ def get_product_detail(slug):
     query = """
     query ProductBySlug($slug: String!) {
       productBySlug(slug: $slug) {
-        name releaseYear minPlayers maxPlayers playingTimeMinutes minAge
+        bggId name releaseYear minPlayers maxPlayers playingTimeMinutes minAge
         weight category price quantity publisher imageUrl
         reviewSummary { approvedReviewCount averageRating }
         approvedReviews { rating body createdAt }
@@ -322,6 +322,7 @@ def get_product_detail(slug):
         raise UpstreamError("The requested game does not exist", "PRODUCT_NOT_FOUND")
     try:
         return {
+            "bgg_id": product["bggId"],
             "name": product["name"],
             "weight": product["weight"],
             "category": product["category"],
