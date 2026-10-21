@@ -37,6 +37,18 @@ def remove_from_cart(bgg_id, cart_id=None, token=None):
     return proxy.remove_from_cart(bgg_id, cart_id, token)
 
 
+def get_wishlist(token):
+    return proxy.get_wishlist(token)
+
+
+def add_to_wishlist(bgg_id, token):
+    return proxy.add_to_wishlist(bgg_id, token)
+
+
+def remove_from_wishlist(bgg_id, token):
+    return proxy.remove_from_wishlist(bgg_id, token)
+
+
 def checkout(shipping_mode, address, token):
     return proxy.checkout(shipping_mode, address, token)
 

@@ -18,6 +18,9 @@ from src.controllers import (
     read_cart as read_cart_controller,
     remove_cart_item as remove_cart_item_controller,
     update_cart_item as update_cart_item_controller,
+    add_wishlist_item,
+    list_wishlist,
+    remove_wishlist_item,
 )
 from src.services import (
     add_to_cart,
@@ -35,6 +38,9 @@ from src.services import (
     register_account,
     remove_from_cart,
     update_cart_quantity,
+    add_to_wishlist,
+    get_wishlist,
+    remove_from_wishlist,
 )
 
 app = Flask(__name__)
@@ -103,6 +109,21 @@ def cart_update_item(bgg_id):
 @app.route("/api/v1/cart/items/<bgg_id>", methods=["DELETE"])
 def cart_remove_item(bgg_id):
     return remove_cart_item_controller(bgg_id, remove_from_cart)
+
+
+@app.route("/api/v1/wishlist", methods=["GET"])
+def wishlist():
+    return list_wishlist(get_wishlist)
+
+
+@app.route("/api/v1/wishlist", methods=["POST"])
+def wishlist_add_item():
+    return add_wishlist_item(add_to_wishlist)
+
+
+@app.route("/api/v1/wishlist/<bgg_id>", methods=["DELETE"])
+def wishlist_remove_item(bgg_id):
+    return remove_wishlist_item(bgg_id, remove_from_wishlist)
 
 
 @app.route("/api/v1/checkout", methods=["POST"])
