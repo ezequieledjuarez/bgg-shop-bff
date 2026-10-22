@@ -274,7 +274,7 @@ def list_products(
         raise UpstreamError("GraphQL upstream returned an invalid product payload") from exc
 
 
-def _graphql_request(query, variables, token=None):
+def _graphql_request(query, variables, token=None, map_wishlist_errors=False):
     headers = {"Authorization": token} if token else {}
     try:
         response = requests.post(
@@ -287,6 +287,19 @@ def _graphql_request(query, variables, token=None):
         payload = response.json()
     except (requests.RequestException, ValueError) as exc:
         raise UpstreamError(str(exc)) from exc
+    if not isinstance(payload, dict):
+        raise UpstreamError("GraphQL upstream returned an invalid response")
+    if map_wishlist_errors:
+        for error in payload.get("errors") or []:
+            if not isinstance(error, dict):
+                continue
+            extensions = error.get("extensions")
+            code = extensions.get("code") if isinstance(extensions, dict) else None
+            message = error.get("message")
+            if code == "UNAUTHENTICATED" or message == "Authentication is required.":
+                raise UpstreamError("Authentication is required.", "UNAUTHENTICATED")
+            if code == "PRODUCT_NOT_FOUND" or message == "Product not found.":
+                raise UpstreamError("The requested game does not exist.", "PRODUCT_NOT_FOUND")
     return payload
 
 
@@ -294,7 +307,7 @@ def get_product_detail(slug):
     query = """
     query ProductBySlug($slug: String!) {
       productBySlug(slug: $slug) {
-        name releaseYear minPlayers maxPlayers playingTimeMinutes minAge
+        bggId name releaseYear minPlayers maxPlayers playingTimeMinutes minAge
         weight category price quantity publisher imageUrl
         reviewSummary { approvedReviewCount averageRating }
         approvedReviews { rating body createdAt }
@@ -309,6 +322,7 @@ def get_product_detail(slug):
         raise UpstreamError("The requested game does not exist", "PRODUCT_NOT_FOUND")
     try:
         return {
+            "bgg_id": product["bggId"],
             "name": product["name"],
             "weight": product["weight"],
             "category": product["category"],
@@ -450,6 +464,73 @@ def update_cart_quantity(bgg_id, quantity, cart_id=None, token=None):
 
 def remove_from_cart(bgg_id, cart_id=None, token=None):
     return _cart_mutation("removeFromCart", bgg_id, None, cart_id, token)
+
+
+_WISHLIST_PRODUCT_FIELDS = """
+  bggId name releaseYear minPlayers maxPlayers playingTimeMinutes minAge
+  weight category price quantity publisher imageUrl
+"""
+
+
+def _map_wishlist_product(product):
+    if not isinstance(product, dict):
+        raise UpstreamError("GraphQL upstream returned an invalid Wishlist product")
+    try:
+        return {
+            "bgg_id": product["bggId"],
+            "name": product["name"],
+            "release_year": product["releaseYear"],
+            "min_players": product["minPlayers"],
+            "max_players": product["maxPlayers"],
+            "playing_time_minutes": product["playingTimeMinutes"],
+            "min_age": product["minAge"],
+            "weight": product["weight"],
+            "category": product["category"],
+            "price": product["price"],
+            "quantity": product["quantity"],
+            "publisher": product["publisher"],
+            "image_url": product["imageUrl"],
+        }
+    except (KeyError, TypeError) as exc:
+        raise UpstreamError("GraphQL upstream returned an invalid Wishlist product") from exc
+
+
+def get_wishlist(token):
+    query = f"""
+    query MyWishlist {{
+      myWishlist {{ {_WISHLIST_PRODUCT_FIELDS} }}
+    }}
+    """
+    payload = _graphql_request(query, {}, token, map_wishlist_errors=True)
+    if payload.get("errors"):
+        raise UpstreamError("GraphQL upstream returned errors")
+    products = (payload.get("data") or {}).get("myWishlist")
+    if not isinstance(products, list):
+        raise UpstreamError("GraphQL upstream returned an invalid Wishlist payload")
+    return [_map_wishlist_product(product) for product in products]
+
+
+def _wishlist_mutation(field, bgg_id, token):
+    query = f"""
+    mutation WishlistMutation($bggId: Int!) {{
+      {field}(bggId: $bggId) {{ {_WISHLIST_PRODUCT_FIELDS} }}
+    }}
+    """
+    payload = _graphql_request(
+        query, {"bggId": bgg_id}, token, map_wishlist_errors=True
+    )
+    if payload.get("errors"):
+        raise UpstreamError("GraphQL upstream returned errors")
+    product = (payload.get("data") or {}).get(field)
+    return _map_wishlist_product(product)
+
+
+def add_to_wishlist(bgg_id, token):
+    return _wishlist_mutation("addToWishlist", bgg_id, token)
+
+
+def remove_from_wishlist(bgg_id, token):
+    return _wishlist_mutation("removeFromWishlist", bgg_id, token)
 
 
 _ORDER_FIELDS = """

@@ -9,6 +9,7 @@ from .products import (
     ProductPageDto,
     ProductQuery,
 )
+from .wishlist import WishlistAddRequestDto
 
 __all__ = [
     "AuthRequest",
@@ -22,4 +23,5 @@ __all__ = [
     "ProductQuery",
     "SessionDto",
     "UserDto",
+    "WishlistAddRequestDto",
 ]

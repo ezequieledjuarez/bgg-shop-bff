@@ -68,3 +68,6 @@ Thumbs.db
 logs/
 *.tmp
 *.temp
+
+# Ignore Windows Zone.Identifier alternate data stream artifacts
+*.Identifier

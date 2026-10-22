@@ -165,6 +165,18 @@ Ejemplo de respuesta:
 }
 ```
 
+### Wishlist
+
+The authenticated Wishlist is available through `GET /api/v1/wishlist`,
+`POST /api/v1/wishlist` with `{"bgg_id": 274364}`, and
+`DELETE /api/v1/wishlist/{bgg_id}`. The BFF forwards the caller's
+`Authorization` header unchanged; Core derives account ownership from that
+token. Add and remove return the existing product shape, while list returns
+`{"items": [...]}`. Invalid identifiers return `400`, missing or invalid
+authentication returns `401`, and sanitized Core/upstream failures return
+`502`. Adding an item to the cart does not remove it from the Wishlist.
+See the [Wishlist specification](specs/006-wishlist/spec.md).
+
 ### Purchase and order endpoints
 
 All purchase and order routes require `Authorization: Bearer <access-token>`. The BFF forwards that token to Core; it never accepts a user ID and never uses Mercado Pago credentials.

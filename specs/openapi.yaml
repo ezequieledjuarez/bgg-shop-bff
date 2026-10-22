@@ -363,6 +363,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ProductDetail'
               example:
+                bgg_id: 274364
                 name: Watergate
                 release_year: 2019
                 min_players: 2
@@ -454,6 +455,140 @@ paths:
                 errors:
                   - code: UPSTREAM_ERROR
                     message: upstream GraphQL request failed
+  /api/v1/wishlist:
+    get:
+      tags: [Wishlist]
+      summary: List the authenticated customer's wishlist
+      operationId: listWishlist
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: Wishlist products owned by the authenticated customer.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WishlistResponse'
+              example:
+                items:
+                  - bgg_id: 274364
+                    name: Watergate
+                    release_year: 2019
+                    min_players: 2
+                    max_players: 2
+                    playing_time_minutes: 60
+                    min_age: 12
+                    weight: 2.25
+                    category: [Strategy]
+                    price: 90000.0
+                    quantity: 10
+                    publisher: Salt & Pepper Games
+                    image_url: /media/portadas/2743640.webp
+        '401':
+          description: Missing or invalid bearer token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrderErrorResponse'
+        '502':
+          description: Core is unavailable or returned an invalid response.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    post:
+      tags: [Wishlist]
+      summary: Add a product to the authenticated customer's wishlist
+      operationId: addWishlistItem
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WishlistAddRequest'
+            example:
+              bgg_id: 274364
+      responses:
+        '200':
+          description: The added product, including the existing BFF product fields.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Product'
+        '400':
+          description: The request body is invalid or the identifier is not a positive GraphQL Int.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Missing or invalid bearer token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrderErrorResponse'
+        '404':
+          description: The product does not exist.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrderErrorResponse'
+        '502':
+          description: Core is unavailable or returned an invalid response.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/v1/wishlist/{bgg_id}:
+    delete:
+      tags: [Wishlist]
+      summary: Remove a product from the authenticated customer's wishlist
+      operationId: removeWishlistItem
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: bgg_id
+          in: path
+          required: true
+          description: Positive BoardGameGeek product identifier within GraphQL Int range.
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 2147483647
+          example: 274364
+      responses:
+        '200':
+          description: The removed product, including the existing BFF product fields.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Product'
+        '400':
+          description: The identifier is not a positive GraphQL Int.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Missing or invalid bearer token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrderErrorResponse'
+        '404':
+          description: The product does not exist.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrderErrorResponse'
+        '502':
+          description: Core is unavailable or returned an invalid response.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /api/v1/checkout:
     post:
       tags: [Orders]
@@ -984,6 +1119,7 @@ components:
     ProductDetail:
       type: object
       required:
+        - bgg_id
         - name
         - release_year
         - min_players
@@ -999,6 +1135,11 @@ components:
         - review_summary
         - approved_reviews
       properties:
+        bgg_id:
+          type: integer
+          minimum: 1
+          description: Public BoardGameGeek product identifier.
+          example: 274364
         name:
           type: string
         release_year:
@@ -1221,6 +1362,25 @@ components:
           minimum: 0
           description: Current inventory available for this product.
           example: 10
+    WishlistAddRequest:
+      type: object
+      additionalProperties: false
+      required: [bgg_id]
+      properties:
+        bgg_id:
+          type: integer
+          minimum: 1
+          maximum: 2147483647
+          description: Product identifier. User identity is derived exclusively from the bearer token.
+          example: 274364
+    WishlistResponse:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Product'
     ProductPage:
       type: object
       required:

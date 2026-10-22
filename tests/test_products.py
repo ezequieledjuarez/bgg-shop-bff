@@ -145,6 +145,7 @@ def test_graphql_response_is_mapped_to_rest_contract():
 def test_product_detail_exposes_inventory_quantity():
     response = MagicMock()
     response.json.return_value = {"data": {"productBySlug": {
+        "bggId": 1,
         "name": "Game", "releaseYear": 2020, "minPlayers": 2, "maxPlayers": 4,
         "playingTimeMinutes": 60, "minAge": 10, "weight": 2.5,
         "category": ["Strategy"], "price": 12.5, "quantity": 6,
@@ -155,12 +156,15 @@ def test_product_detail_exposes_inventory_quantity():
     with patch("src.proxy.requests.post", return_value=response) as post:
         result = get_product_detail("game")
 
+    assert result["bgg_id"] == 1
     assert result["quantity"] == 6
+    assert "bggId" in post.call_args.kwargs["json"]["query"]
     assert "quantity" in post.call_args.kwargs["json"]["query"]
 
 
 def test_product_detail_rest_response_includes_inventory_quantity():
     with patch("app.get_product_detail", return_value={
+        "bgg_id": 1,
         "name": "Game", "release_year": 2020, "min_players": 2, "max_players": 4,
         "playing_time_minutes": 60, "min_age": 10, "weight": 2.5,
         "category": ["Strategy"], "price": 12.5, "quantity": 6,
@@ -171,4 +175,5 @@ def test_product_detail_rest_response_includes_inventory_quantity():
         response = app.test_client().get("/api/v1/games/game")
 
     assert response.status_code == 200
+    assert response.get_json()["bgg_id"] == 1
     assert response.get_json()["quantity"] == 6
