@@ -71,3 +71,42 @@ def get_order(order_id, token):
 
 def get_invoice(order_id, token):
     return proxy.get_invoice(order_id, token)
+
+
+def check_admin(token):
+    return proxy.check_admin(token)
+
+
+# Admin / management wrappers
+def admin_list_products(page=1, page_size=20, q=None):
+    # Reuse the public list_products proxy for now; admin may require more fields later
+    return proxy.list_products(page=page, page_size=page_size, search=q)
+
+
+def admin_create_product(payload):
+    return proxy.create_product(payload)
+
+
+def admin_update_product(product_id, payload):
+    return proxy.update_product(product_id, payload)
+
+
+def adjust_variant_stock(product_id, variant_id, new_stock):
+    return proxy.adjust_variant_stock(product_id, variant_id, new_stock)
+
+
+# Promotions
+def admin_list_promotions():
+    return proxy.list_promotions()
+
+
+def admin_create_promotion(payload):
+    return proxy.create_promotion(payload)
+
+
+def admin_update_promotion(promotion_id, payload):
+    return proxy.update_promotion(promotion_id, payload)
+
+
+def admin_apply_coupon_preview(code, **kwargs):
+    return proxy.apply_coupon_preview(code, kwargs)

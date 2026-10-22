@@ -717,3 +717,215 @@ def get_invoice(order_id, token):
         return response
     except requests.RequestException as exc:
         raise UpstreamError(str(exc)) from exc
+
+
+def check_admin(token):
+    """Return True if the provided Authorization token belongs to an admin user."""
+    query = """
+    query WhoAmI {
+      me { id email isStaff isSuperuser }
+    }
+    """
+    try:
+        payload = _graphql_request(query, {}, token)
+    except UpstreamError:
+        raise
+    if payload.get("errors"):
+        raise UpstreamError("GraphQL upstream returned errors")
+    me = (payload.get("data") or {}).get("me")
+    if not isinstance(me, dict):
+        raise UpstreamError("GraphQL upstream returned an invalid me payload")
+    return bool(me.get("isStaff") or me.get("isSuperuser"))
+
+
+def list_promotions():
+    query = """
+    query ListPromotions {
+      promotions { id name discountPercent active }
+    }
+    """
+    payload = _graphql_request(query, {}, None)
+    if payload.get("errors"):
+        raise UpstreamError("GraphQL upstream returned errors")
+    promotions = (payload.get("data") or {}).get("promotions")
+    if not isinstance(promotions, list):
+        raise UpstreamError("GraphQL upstream returned an invalid promotions payload")
+    return [
+        {
+            "id": p.get("id"),
+            "name": p.get("name"),
+            "discount_percent": p.get("discountPercent"),
+            "active": bool(p.get("active")),
+        }
+        for p in promotions
+    ]
+
+
+def create_promotion(payload):
+    if not isinstance(payload, dict):
+        raise ValueError("payload must be an object")
+    query = """
+    mutation CreatePromotion($input: CreatePromotionInput!) {
+      createPromotion(input: $input) {
+        promotion { id name }
+        userErrors { field code message }
+      }
+    }
+    """
+    variables = {"input": payload}
+    resp = _graphql_request(query, variables)
+    if resp.get("errors"):
+        raise UpstreamError("GraphQL upstream returned errors")
+    result = (resp.get("data") or {}).get("createPromotion")
+    if not isinstance(result, dict):
+        raise UpstreamError("GraphQL upstream returned an invalid createPromotion payload")
+    errors = result.get("userErrors") or []
+    if errors:
+        err = errors[0]
+        raise UpstreamError(err.get("message", "Create promotion failed"), err.get("code"), err.get("field"), user_error=True)
+    promo = result.get("promotion")
+    return {"id": promo.get("id"), "name": promo.get("name")}
+
+
+def update_promotion(promotion_id, payload):
+    if not isinstance(payload, dict):
+        raise ValueError("payload must be an object")
+    query = """
+    mutation UpdatePromotion($id: ID!, $input: UpdatePromotionInput!) {
+      updatePromotion(id: $id, input: $input) {
+        promotion { id name }
+        userErrors { field code message }
+      }
+    }
+    """
+    variables = {"id": promotion_id, "input": payload}
+    resp = _graphql_request(query, variables)
+    if resp.get("errors"):
+        raise UpstreamError("GraphQL upstream returned errors")
+    result = (resp.get("data") or {}).get("updatePromotion")
+    if not isinstance(result, dict):
+        raise UpstreamError("GraphQL upstream returned an invalid updatePromotion payload")
+    errors = result.get("userErrors") or []
+    if errors:
+        err = errors[0]
+        raise UpstreamError(err.get("message", "Update promotion failed"), err.get("code"), err.get("field"), user_error=True)
+    promo = result.get("promotion")
+    return {"id": promo.get("id"), "name": promo.get("name")}
+
+
+# Admin mutations and management helpers
+def create_product(payload):
+    # Basic validation
+    if not isinstance(payload, dict):
+        raise ValueError("payload must be an object")
+    name = payload.get("name")
+    if not name:
+        raise ValueError("name is required")
+    query = """
+    mutation CreateProduct($input: CreateProductInput!) {
+      createProduct(input: $input) {
+        product { bggId name }
+        userErrors { field code message }
+      }
+    }
+    """
+    variables = {"input": payload}
+    payload_resp = _graphql_request(query, variables)
+    if payload_resp.get("errors"):
+        raise UpstreamError("GraphQL upstream returned errors")
+    result = (payload_resp.get("data") or {}).get("createProduct")
+    if not isinstance(result, dict):
+        raise UpstreamError("GraphQL upstream returned an invalid createProduct payload")
+    errors = result.get("userErrors") or []
+    if errors:
+        err = errors[0]
+        raise UpstreamError(err.get("message", "Create product failed"), err.get("code"), err.get("field"), user_error=True)
+    product = result.get("product")
+    return {"bgg_id": product.get("bggId"), "name": product.get("name")}
+
+
+def update_product(product_id, payload):
+    if not isinstance(payload, dict):
+        raise ValueError("payload must be an object")
+    query = """
+    mutation UpdateProduct($id: ID!, $input: UpdateProductInput!) {
+      updateProduct(id: $id, input: $input) {
+        product { bggId name }
+        userErrors { field code message }
+      }
+    }
+    """
+    variables = {"id": product_id, "input": payload}
+    payload_resp = _graphql_request(query, variables)
+    if payload_resp.get("errors"):
+        raise UpstreamError("GraphQL upstream returned errors")
+    result = (payload_resp.get("data") or {}).get("updateProduct")
+    if not isinstance(result, dict):
+        raise UpstreamError("GraphQL upstream returned an invalid updateProduct payload")
+    errors = result.get("userErrors") or []
+    if errors:
+        err = errors[0]
+        raise UpstreamError(err.get("message", "Update product failed"), err.get("code"), err.get("field"), user_error=True)
+    product = result.get("product")
+    return {"bgg_id": product.get("bggId"), "name": product.get("name")}
+
+
+def adjust_variant_stock(product_id, variant_id, new_stock):
+    try:
+        new_stock_int = int(new_stock)
+    except (ValueError, TypeError):
+        raise ValueError("new_stock must be an integer")
+    query = """
+    mutation AdjustVariantStock($productId: ID!, $variantId: ID!, $newStock: Int!) {
+      adjustVariantStock(productId: $productId, variantId: $variantId, newStock: $newStock) {
+        success
+        errors { field code message }
+      }
+    }
+    """
+    variables = {"productId": product_id, "variantId": variant_id, "newStock": new_stock_int}
+    payload_resp = _graphql_request(query, variables)
+    if payload_resp.get("errors"):
+        raise UpstreamError("GraphQL upstream returned errors")
+    result = (payload_resp.get("data") or {}).get("adjustVariantStock")
+    if not isinstance(result, dict):
+        raise UpstreamError("GraphQL upstream returned an invalid adjustVariantStock payload")
+    errors = result.get("errors") or []
+    if errors:
+        err = errors[0]
+        raise UpstreamError(err.get("message", "Adjust stock failed"), err.get("code"), err.get("field"), user_error=True)
+    return {"success": bool(result.get("success"))}
+
+
+def apply_coupon_preview(code, input_payload):
+    """Preview applying a coupon to a cart or guest session.
+
+    Returns a dict with keys: valid, discountAmount, newTotal.
+    Raises UpstreamError with user_error=True when GraphQL reports userErrors.
+    """
+    query = """
+    mutation ApplyCouponPreview($code: String!, $input: ApplyCouponInput) {
+      applyCouponPreview(code: $code, input: $input) {
+        valid
+        discountAmount
+        newTotal
+        userErrors { field code message }
+      }
+    }
+    """
+    variables = {"code": code, "input": input_payload}
+    payload = _graphql_request(query, variables)
+    if payload.get("errors"):
+        raise UpstreamError("GraphQL upstream returned errors")
+    result = (payload.get("data") or {}).get("applyCouponPreview")
+    if not isinstance(result, dict):
+        raise UpstreamError("GraphQL upstream returned an invalid applyCouponPreview payload")
+    user_errors = result.get("userErrors") or []
+    if user_errors:
+        err = user_errors[0]
+        raise UpstreamError(err.get("message", "Coupon preview failed"), err.get("code"), err.get("field"), user_error=True)
+    return {
+        "valid": bool(result.get("valid")),
+        "discountAmount": result.get("discountAmount"),
+        "newTotal": result.get("newTotal"),
+    }

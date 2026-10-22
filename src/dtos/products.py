@@ -143,3 +143,92 @@ class CreateReviewResponseDto:
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+
+@dataclass(frozen=True)
+class AdminCreateProductDto:
+    name: Any
+    price: Any
+    quantity: Any
+
+    @classmethod
+    def from_payload(cls, payload: Any) -> "AdminCreateProductDto":
+        if not isinstance(payload, dict):
+            raise ValueError("Request body must be a JSON object")
+        return cls(name=payload.get("name"), price=payload.get("price"), quantity=payload.get("quantity"))
+
+    def validate(self) -> dict[str, Any]:
+        if not isinstance(self.name, str) or not self.name.strip():
+            raise ValueError("name is required")
+        try:
+            price = float(self.price)
+        except (TypeError, ValueError):
+            raise ValueError("price must be a number")
+        if price < 0:
+            raise ValueError("price must be greater than or equal to 0")
+        try:
+            quantity = int(self.quantity)
+        except (TypeError, ValueError):
+            raise ValueError("quantity must be an integer")
+        if quantity < 0:
+            raise ValueError("quantity must be greater than or equal to 0")
+        return {"name": self.name.strip(), "price": price, "quantity": quantity}
+
+
+@dataclass(frozen=True)
+class AdminUpdateProductDto:
+    name: Any
+    price: Any
+    quantity: Any
+
+    @classmethod
+    def from_payload(cls, payload: Any) -> "AdminUpdateProductDto":
+        if not isinstance(payload, dict):
+            raise ValueError("Request body must be a JSON object")
+        return cls(name=payload.get("name"), price=payload.get("price"), quantity=payload.get("quantity"))
+
+    def validate(self) -> dict[str, Any]:
+        data: dict[str, Any] = {}
+        if self.name is not None:
+            if not isinstance(self.name, str) or not self.name.strip():
+                raise ValueError("name, if provided, must be a non-empty string")
+            data["name"] = self.name.strip()
+        if self.price is not None:
+            try:
+                price = float(self.price)
+            except (TypeError, ValueError):
+                raise ValueError("price must be a number")
+            if price < 0:
+                raise ValueError("price must be greater than or equal to 0")
+            data["price"] = price
+        if self.quantity is not None:
+            try:
+                quantity = int(self.quantity)
+            except (TypeError, ValueError):
+                raise ValueError("quantity must be an integer")
+            if quantity < 0:
+                raise ValueError("quantity must be greater than or equal to 0")
+            data["quantity"] = quantity
+        if not data:
+            raise ValueError("at least one field must be provided")
+        return data
+
+
+@dataclass(frozen=True)
+class AdjustStockDto:
+    new_stock: Any
+
+    @classmethod
+    def from_payload(cls, payload: Any) -> "AdjustStockDto":
+        if not isinstance(payload, dict):
+            raise ValueError("Request body must be a JSON object")
+        return cls(new_stock=payload.get("new_stock"))
+
+    def validate(self) -> int:
+        try:
+            new_stock_int = int(self.new_stock)
+        except (TypeError, ValueError):
+            raise ValueError("new_stock must be an integer")
+        if new_stock_int < 0:
+            raise ValueError("new_stock must be greater than or equal to 0")
+        return new_stock_int

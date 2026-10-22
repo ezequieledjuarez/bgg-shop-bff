@@ -42,6 +42,18 @@ from src.services import (
     get_wishlist,
     remove_from_wishlist,
 )
+from src.controllers import (
+    admin_list_products as admin_list_products_controller,
+    admin_create_product as admin_create_product_controller,
+    admin_update_product as admin_update_product_controller,
+    admin_adjust_variant_stock as admin_adjust_variant_stock_controller,
+)
+from src.controllers import (
+    admin_list_promotions as admin_list_promotions_controller,
+    admin_create_promotion as admin_create_promotion_controller,
+    admin_update_promotion as admin_update_promotion_controller,
+)
+from src.controllers import admin_apply_coupon_preview as admin_apply_coupon_preview_controller
 
 app = Flask(__name__)
 allowed_origins = ("http://localhost:3000", "http://127.0.0.1:3000")
@@ -177,6 +189,49 @@ def login():
             samesite="Lax",
         )
     return response, status
+
+
+# Admin management endpoints (minimal scaffolding)
+@app.route("/admin/products", methods=["GET"])
+def admin_products_list():
+    return admin_list_products_controller()
+
+
+@app.route("/admin/products", methods=["POST"])
+def admin_products_create():
+    return admin_create_product_controller()
+
+
+@app.route("/admin/products/<product_id>", methods=["PUT"])
+def admin_products_update(product_id):
+    return admin_update_product_controller(product_id)
+
+
+@app.route("/admin/products/<product_id>/variants/<variant_id>/adjust-stock", methods=["POST"])
+def admin_products_adjust_stock(product_id, variant_id):
+    return admin_adjust_variant_stock_controller(product_id, variant_id)
+
+
+# Admin promotions
+@app.route("/admin/promotions", methods=["GET"])
+def admin_promotions_list():
+    return admin_list_promotions_controller()
+
+
+@app.route("/admin/promotions", methods=["POST"])
+def admin_promotions_create():
+    return admin_create_promotion_controller()
+
+
+@app.route("/admin/promotions/<promotion_id>", methods=["PUT"])
+def admin_promotions_update(promotion_id):
+    return admin_update_promotion_controller(promotion_id)
+
+
+# Admin coupons
+@app.route("/admin/coupons/<code>/apply", methods=["POST"])
+def admin_coupons_apply(code):
+    return admin_apply_coupon_preview_controller(code)
 
 
 if __name__ == "__main__":
