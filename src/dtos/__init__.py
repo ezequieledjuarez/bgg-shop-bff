@@ -1,5 +1,6 @@
 from .auth import AuthRequest, AuthResponse, SessionDto, UserDto
 from .cart import CartItemRequestDto, CartResponseDto
+from .orders import CheckoutRequestDto, ConfirmPaymentRequestDto
 from .products import (
     CreateReviewRequestDto,
     CreateReviewResponseDto,
@@ -14,6 +15,8 @@ __all__ = [
     "AuthResponse",
     "CartItemRequestDto",
     "CartResponseDto",
+    "CheckoutRequestDto",
+    "ConfirmPaymentRequestDto",
     "ProductDto",
     "ProductPageDto",
     "ProductQuery",

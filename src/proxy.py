@@ -1,4 +1,6 @@
 import os
+import uuid
+from urllib.parse import urlsplit, urlunsplit
 
 import requests
 
@@ -8,9 +10,11 @@ DEFAULT_GRAPHQL_URL = "http://localhost:8000/graphql/"
 
 
 class UpstreamError(Exception):
-    def __init__(self, message, code="UPSTREAM_ERROR"):
+    def __init__(self, message, code="UPSTREAM_ERROR", field=None, user_error=False):
         super().__init__(message)
         self.code = code
+        self.field = field
+        self.user_error = user_error
 
 
 def _required_text(payload, name, minimum=1, maximum=254):
@@ -446,3 +450,189 @@ def update_cart_quantity(bgg_id, quantity, cart_id=None, token=None):
 
 def remove_from_cart(bgg_id, cart_id=None, token=None):
     return _cart_mutation("removeFromCart", bgg_id, None, cart_id, token)
+
+
+_ORDER_FIELDS = """
+  id status total currency shippingMode recipient street city postalCode phone
+  paymentStatus paymentStatusDetail createdAt paidAt
+  lines { bggId name unitPrice quantity subtotal }
+  invoice { number issuedAt total }
+"""
+
+
+def _map_order(order):
+    if not isinstance(order, dict):
+        raise UpstreamError("GraphQL upstream returned an invalid order payload")
+    try:
+        invoice = order.get("invoice")
+        return {
+            "id": order["id"],
+            "status": order["status"],
+            "total": order["total"],
+            "currency": order["currency"],
+            "shipping_mode": order["shippingMode"],
+            "recipient": order.get("recipient"),
+            "street": order.get("street"),
+            "city": order.get("city"),
+            "postal_code": order.get("postalCode"),
+            "phone": order.get("phone"),
+            "payment_status": order.get("paymentStatus"),
+            "payment_status_detail": order.get("paymentStatusDetail"),
+            "created_at": order["createdAt"],
+            "paid_at": order.get("paidAt"),
+            "lines": [
+                {
+                    "bgg_id": line["bggId"],
+                    "name": line["name"],
+                    "unit_price": line["unitPrice"],
+                    "quantity": line["quantity"],
+                    "subtotal": line["subtotal"],
+                }
+                for line in order["lines"]
+            ],
+            "invoice": (
+                {"number": invoice["number"], "issued_at": invoice["issuedAt"], "total": invoice["total"]}
+                if invoice is not None
+                else None
+            ),
+        }
+    except (KeyError, TypeError) as exc:
+        raise UpstreamError("GraphQL upstream returned an invalid order payload") from exc
+
+
+def _raise_order_graphql_errors(payload):
+    errors = payload.get("errors") or []
+    if any(
+        isinstance(error, dict)
+        and (
+            (error.get("extensions") or {}).get("code") == "UNAUTHENTICATED"
+            or error.get("message") == "Authentication is required."
+        )
+        for error in errors
+    ):
+        raise UpstreamError("Authentication is required.", "UNAUTHENTICATED")
+    if errors:
+        raise UpstreamError("GraphQL upstream returned errors")
+
+
+def _order_payload(payload, field):
+    _raise_order_graphql_errors(payload)
+    result = (payload.get("data") or {}).get(field)
+    if not isinstance(result, dict):
+        raise UpstreamError("GraphQL upstream returned an invalid order payload")
+    errors = result.get("userErrors") or []
+    if not isinstance(errors, list):
+        raise UpstreamError("GraphQL upstream returned an invalid order error payload")
+    if errors:
+        error = errors[0]
+        if not isinstance(error, dict):
+            raise UpstreamError("GraphQL upstream returned an invalid order error payload")
+        raise UpstreamError(
+            error.get("message", "Order operation failed"),
+            error.get("code", "INVALID"),
+            error.get("field"),
+            user_error=True,
+        )
+    order = result.get("order")
+    if order is None:
+        raise UpstreamError("Order not found", "ORDER_NOT_FOUND")
+    return {"order": _map_order(order), "init_point": result.get("initPoint")}
+
+
+def checkout(shipping_mode, address, token):
+    query = f"""
+    mutation Checkout($address: ShippingAddressInput, $shippingMode: ShippingMode!) {{
+      checkout(address: $address, shippingMode: $shippingMode) {{
+        order {{ {_ORDER_FIELDS} }} initPoint userErrors {{ field code message }}
+      }}
+    }}
+    """
+    core_address = None if address is None else {
+        "recipient": address.get("recipient"),
+        "street": address.get("street"),
+        "city": address.get("city"),
+        "postalCode": address.get("postal_code"),
+        "phone": address.get("phone"),
+    }
+    payload = _graphql_request(query, {
+        "address": core_address,
+        "shippingMode": shipping_mode.upper(),
+    }, token)
+    return _order_payload(payload, "checkout")
+
+
+def retry_payment(order_id, token):
+    query = f"""
+    mutation RetryPayment($orderId: ID!) {{
+      retryPayment(orderId: $orderId) {{
+        order {{ {_ORDER_FIELDS} }} initPoint userErrors {{ field code message }}
+      }}
+    }}
+    """
+    return _order_payload(_graphql_request(query, {"orderId": order_id}, token), "retryPayment")
+
+
+def confirm_payment(order_id, payment_id, token):
+    query = f"""
+    mutation ConfirmPayment($orderId: ID!, $paymentId: ID!) {{
+      confirmPayment(orderId: $orderId, paymentId: $paymentId) {{
+        order {{ {_ORDER_FIELDS} }} userErrors {{ field code message }}
+      }}
+    }}
+    """
+    result = _order_payload(
+        _graphql_request(query, {"orderId": order_id, "paymentId": payment_id}, token),
+        "confirmPayment",
+    )
+    return {"order": result["order"]}
+
+
+def get_orders(token):
+    query = f"""
+    query MyOrders {{ myOrders {{ {_ORDER_FIELDS} }} }}
+    """
+    payload = _graphql_request(query, {}, token)
+    _raise_order_graphql_errors(payload)
+    orders = (payload.get("data") or {}).get("myOrders")
+    if not isinstance(orders, list):
+        raise UpstreamError("GraphQL upstream returned an invalid orders payload")
+    return [_map_order(order) for order in orders]
+
+
+def get_order(order_id, token):
+    query = f"""
+    query MyOrder($id: ID!) {{ myOrder(id: $id) {{ {_ORDER_FIELDS} }} }}
+    """
+    payload = _graphql_request(query, {"id": order_id}, token)
+    _raise_order_graphql_errors(payload)
+    order = (payload.get("data") or {}).get("myOrder")
+    if order is None:
+        raise UpstreamError("Order not found", "ORDER_NOT_FOUND")
+    return _map_order(order)
+
+
+def get_invoice(order_id, token):
+    try:
+        identifier = str(uuid.UUID(order_id))
+    except (ValueError, TypeError, AttributeError) as exc:
+        raise ValueError("order_id must be a UUID") from exc
+    auth_payload = _graphql_request("query InvoiceAuthCheck { myOrders { id } }", {}, token)
+    _raise_order_graphql_errors(auth_payload)
+    if not isinstance((auth_payload.get("data") or {}).get("myOrders"), list):
+        raise UpstreamError("GraphQL upstream returned an invalid orders payload")
+    graphql_url = os.getenv("SALEOR_GRAPHQL_URL", DEFAULT_GRAPHQL_URL)
+    parsed = urlsplit(graphql_url)
+    base_path = parsed.path.rstrip("/").rsplit("/graphql", 1)[0]
+    invoice_url = urlunsplit((parsed.scheme, parsed.netloc, base_path + "/invoices/" + identifier, "", ""))
+    try:
+        response = requests.get(
+            invoice_url,
+            headers={"Authorization": token},
+            timeout=30,
+            stream=True,
+        )
+        if response.status_code != 404:
+            response.raise_for_status()
+        return response
+    except requests.RequestException as exc:
+        raise UpstreamError(str(exc)) from exc

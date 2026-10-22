@@ -2,7 +2,7 @@ openapi: 3.2.0
 info:
   title: BGG Shop BFF API
   version: 1.0.0
-  description: REST API exposed by the BFF for the board-game catalog, filters, and shopping cart.
+  description: REST API exposed by the BFF for the board-game catalog, shopping cart, and purchase orders.
 paths:
   /api/v1/auth/register:
     post:
@@ -454,6 +454,290 @@ paths:
                 errors:
                   - code: UPSTREAM_ERROR
                     message: upstream GraphQL request failed
+  /api/v1/checkout:
+    post:
+      tags: [Orders]
+      summary: Create an order and initialize checkout payment
+      operationId: checkout
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CheckoutRequest'
+      responses:
+        '200':
+          description: Order and Mercado Pago checkout URL.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CheckoutResponse'
+        '400':
+          description: Request or shipping details are invalid.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrderErrorResponse'
+        '401':
+          description: Missing or invalid bearer token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrderErrorResponse'
+        '409':
+          description: Current cart contents exceed available stock.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrderErrorResponse'
+        '422':
+          description: Cart is empty or the order cannot be paid.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrderErrorResponse'
+        '502':
+          description: Core is unavailable or payment initialization failed.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/ErrorResponse'
+                  - $ref: '#/components/schemas/OrderErrorResponse'
+        '503':
+          description: Payments are not configured in Core.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrderErrorResponse'
+  /api/v1/checkout/confirm:
+    post:
+      tags: [Orders]
+      summary: Confirm payment with Core and return the order
+      operationId: confirmCheckoutPayment
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ConfirmPaymentRequest'
+      responses:
+        '200':
+          description: Confirmed, pending, or rejected payment state.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrderResponse'
+        '400':
+          description: Request or payment identifier is invalid.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrderErrorResponse'
+        '401':
+          description: Missing or invalid bearer token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrderErrorResponse'
+        '404':
+          description: The order does not exist or is not owned by the caller.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrderErrorResponse'
+        '422':
+          description: Core could not verify this payment for the order.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrderErrorResponse'
+        '502':
+          description: Core is unavailable.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/v1/orders:
+    get:
+      tags: [Orders]
+      summary: List the authenticated customer's orders
+      operationId: listOrders
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: Orders belonging to the authenticated customer.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrderListResponse'
+        '401':
+          description: Missing or invalid bearer token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrderErrorResponse'
+        '502':
+          description: Core is unavailable.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/v1/orders/{order_id}:
+    get:
+      tags: [Orders]
+      summary: Get an owned order with lines and payment details
+      operationId: getOrder
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: order_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Order detail including shipping, invoice metadata, and rejection reason.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrderResponse'
+        '400':
+          description: The order identifier is not a UUID.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrderErrorResponse'
+        '401':
+          description: Missing or invalid bearer token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrderErrorResponse'
+        '404':
+          description: The order does not exist or is not owned by the caller.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrderErrorResponse'
+        '502':
+          description: Core is unavailable.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/v1/orders/{order_id}/retry-payment:
+    post:
+      tags: [Orders]
+      summary: Initialize a new payment attempt for a rejected order
+      operationId: retryOrderPayment
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: order_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Order and new checkout URL.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CheckoutResponse'
+        '400':
+          description: The order identifier is not a UUID.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrderErrorResponse'
+        '401':
+          description: Missing or invalid bearer token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrderErrorResponse'
+        '404':
+          description: The order does not exist or is not owned by the caller.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrderErrorResponse'
+        '422':
+          description: The order cannot be paid again.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrderErrorResponse'
+        '502':
+          description: Core is unavailable or payment initialization failed.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/ErrorResponse'
+                  - $ref: '#/components/schemas/OrderErrorResponse'
+        '503':
+          description: Payments are not configured in Core.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrderErrorResponse'
+  /api/v1/orders/{order_id}/invoice:
+    get:
+      tags: [Orders]
+      summary: Download the authenticated customer's invoice PDF
+      operationId: downloadOrderInvoice
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: order_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Invoice PDF streamed from Core.
+          headers:
+            Content-Disposition:
+              schema:
+                type: string
+          content:
+            application/pdf:
+              schema:
+                type: string
+                format: binary
+        '400':
+          description: The order identifier is not a UUID.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrderErrorResponse'
+        '401':
+          description: Missing or invalid bearer token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrderErrorResponse'
+        '404':
+          description: No invoice is available for this owned order.
+        '502':
+          description: Core is unavailable.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 components:
   securitySchemes:
     BearerAuth:
@@ -967,6 +1251,176 @@ components:
           type: integer
           minimum: 0
           example: 1
+    CheckoutRequest:
+      type: object
+      additionalProperties: false
+      required: [shipping_mode]
+      properties:
+        shipping_mode:
+          type: string
+          enum: [standard, pickup]
+        address:
+          $ref: '#/components/schemas/ShippingAddress'
+    ShippingAddress:
+      type: object
+      additionalProperties: false
+      properties:
+        recipient:
+          type: string
+          maxLength: 255
+        street:
+          type: string
+          maxLength: 255
+        city:
+          type: string
+          maxLength: 255
+        postal_code:
+          type: string
+          maxLength: 255
+        phone:
+          type: string
+          maxLength: 255
+    ConfirmPaymentRequest:
+      type: object
+      additionalProperties: false
+      required: [order_id, payment_id]
+      properties:
+        order_id:
+          type: string
+          format: uuid
+        payment_id:
+          oneOf:
+            - type: string
+              minLength: 1
+              maxLength: 128
+              pattern: '^[A-Za-z0-9._-]+$'
+            - type: integer
+              minimum: 0
+    CheckoutResponse:
+      type: object
+      required: [order, init_point]
+      properties:
+        order:
+          $ref: '#/components/schemas/PurchaseOrder'
+        init_point:
+          type: string
+          format: uri
+    OrderResponse:
+      type: object
+      required: [order]
+      properties:
+        order:
+          $ref: '#/components/schemas/PurchaseOrder'
+    OrderListResponse:
+      type: object
+      required: [orders]
+      properties:
+        orders:
+          type: array
+          items:
+            $ref: '#/components/schemas/PurchaseOrder'
+    PurchaseOrder:
+      type: object
+      required: [id, status, total, currency, shipping_mode, created_at, lines]
+      properties:
+        id:
+          type: string
+          format: uuid
+        status:
+          type: string
+        total:
+          type: number
+          format: float
+        currency:
+          type: string
+        shipping_mode:
+          type: string
+          enum: [standard, pickup]
+        recipient:
+          type: string
+          nullable: true
+        street:
+          type: string
+          nullable: true
+        city:
+          type: string
+          nullable: true
+        postal_code:
+          type: string
+          nullable: true
+        phone:
+          type: string
+          nullable: true
+        payment_status:
+          type: string
+          nullable: true
+        payment_status_detail:
+          type: string
+          nullable: true
+          description: Payment provider detail, including rejection reason.
+        created_at:
+          type: string
+          format: date-time
+        paid_at:
+          type: string
+          format: date-time
+          nullable: true
+        lines:
+          type: array
+          items:
+            $ref: '#/components/schemas/PurchaseOrderLine'
+        invoice:
+          allOf:
+            - $ref: '#/components/schemas/Invoice'
+          nullable: true
+    PurchaseOrderLine:
+      type: object
+      required: [bgg_id, name, unit_price, quantity, subtotal]
+      properties:
+        bgg_id:
+          type: integer
+        name:
+          type: string
+        unit_price:
+          type: number
+          format: float
+        quantity:
+          type: integer
+        subtotal:
+          type: number
+          format: float
+    Invoice:
+      type: object
+      required: [number, issued_at, total]
+      properties:
+        number:
+          type: integer
+          format: int64
+        issued_at:
+          type: string
+          format: date-time
+        total:
+          type: number
+          format: float
+    OrderErrorResponse:
+      type: object
+      required: [errors]
+      properties:
+        errors:
+          type: array
+          items:
+            type: object
+            required: [code, message]
+            properties:
+              code:
+                type: string
+              message:
+                type: string
+              field:
+                type: array
+                nullable: true
+                items:
+                  type: string
     ErrorResponse:
       type: object
       required:
