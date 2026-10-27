@@ -2,12 +2,13 @@ openapi: 3.2.0
 info:
   title: BGG Shop BFF API
   version: 1.0.0
-  description: REST API exposed by the BFF for the board-game catalog, shopping cart, and purchase orders.
+  description: REST API exposed by the BFF for the board-game catalog, shopping cart,
+    and purchase orders.
 paths:
   /api/v1/auth/register:
     post:
       tags:
-        - Authentication
+      - Authentication
       summary: Register a customer account
       description: Creates a local customer account using email and password credentials.
       operationId: registerAccount
@@ -37,20 +38,26 @@ paths:
               schema:
                 $ref: '#/components/schemas/AuthErrorResponse'
         '502':
-          description: The BFF could not obtain a valid response from the Core GraphQL service.
+          description: The BFF could not obtain a valid response from the Core GraphQL
+            service.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+      security:
+      - {}
+      - BearerAuth: []
+      - XOpKey: []
   /api/v1/auth/login:
     post:
       tags:
-        - Authentication
+      - Authentication
       summary: Authenticate a customer
-      description: Authenticates a customer and merges any guest cart identified by the HttpOnly cart cookie.
+      description: Authenticates a customer and merges any guest cart identified by
+        the HttpOnly cart cookie.
       operationId: loginAccount
       parameters:
-        - $ref: '#/components/parameters/GuestCartCookie'
+      - $ref: '#/components/parameters/GuestCartCookie'
       requestBody:
         required: true
         content:
@@ -59,7 +66,8 @@ paths:
               $ref: '#/components/schemas/LoginRequest'
       responses:
         '200':
-          description: Customer authenticated successfully; the guest cart cookie is cleared after the Core merges it.
+          description: Customer authenticated successfully; the guest cart cookie
+            is cleared after the Core merges it.
           headers:
             Set-Cookie:
               description: Clears the guest cart cookie after successful login.
@@ -82,28 +90,33 @@ paths:
               schema:
                 $ref: '#/components/schemas/AuthErrorResponse'
         '502':
-          description: The BFF could not obtain a valid response from the Core GraphQL service.
+          description: The BFF could not obtain a valid response from the Core GraphQL
+            service.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+      security:
+      - {}
+      - BearerAuth: []
+      - XOpKey: []
   /api/v1/products:
     get:
       tags:
-        - Products
+      - Products
       summary: List and filter board-game products
       description: Returns a paginated collection filtered by optional catalog criteria.
       operationId: listProducts
       parameters:
-        - $ref: '#/components/parameters/Page'
-        - $ref: '#/components/parameters/PageSize'
-        - $ref: '#/components/parameters/Search'
-        - $ref: '#/components/parameters/YearPublished'
-        - $ref: '#/components/parameters/MinPlayers'
-        - $ref: '#/components/parameters/MaxPlayers'
-        - $ref: '#/components/parameters/CategoryId'
-        - $ref: '#/components/parameters/PriceMin'
-        - $ref: '#/components/parameters/PriceMax'
+      - $ref: '#/components/parameters/Page'
+      - $ref: '#/components/parameters/PageSize'
+      - $ref: '#/components/parameters/Search'
+      - $ref: '#/components/parameters/YearPublished'
+      - $ref: '#/components/parameters/MinPlayers'
+      - $ref: '#/components/parameters/MaxPlayers'
+      - $ref: '#/components/parameters/CategoryId'
+      - $ref: '#/components/parameters/PriceMin'
+      - $ref: '#/components/parameters/PriceMax'
       responses:
         '200':
           description: Paginated product collection.
@@ -113,20 +126,20 @@ paths:
                 $ref: '#/components/schemas/ProductPage'
               example:
                 items:
-                  - bgg_id: 274364
-                    name: Watergate
-                    release_year: 2019
-                    min_players: 2
-                    max_players: 2
-                    playing_time_minutes: 60
-                    min_age: 12
-                    weight: 2.25
-                    category:
-                      - Juegos de Estrategia
-                    price: 90000.0
-                    quantity: 10
-                    publisher: Salt & Pepper Games
-                    image_url: /media/portadas/2743640.webp
+                - bgg_id: 274364
+                  name: Watergate
+                  release_year: 2019
+                  min_players: 2
+                  max_players: 2
+                  playing_time_minutes: 60
+                  min_age: 12
+                  weight: 2.25
+                  category:
+                  - Juegos de Estrategia
+                  price: 90000.0
+                  quantity: 10
+                  publisher: Salt & Pepper Games
+                  image_url: /media/portadas/2743640.webp
                 page: 1
                 page_size: 20
                 total: 1
@@ -140,7 +153,8 @@ paths:
               example:
                 error: page_size must not exceed 100
         '502':
-          description: The BFF could not obtain a valid response from the Core GraphQL service.
+          description: The BFF could not obtain a valid response from the Core GraphQL
+            service.
           content:
             application/json:
               schema:
@@ -148,24 +162,32 @@ paths:
               example:
                 error: upstream GraphQL request failed
                 detail: GraphQL upstream returned errors
+      security:
+      - {}
+      - BearerAuth: []
+      - XOpKey: []
   /api/v1/cart:
     get:
       tags:
-        - Cart
+      - Cart
       summary: Read the current cart
-      description: Reads the authenticated account cart when a Bearer token is provided; otherwise uses the opaque guest cart cookie.
+      description: Reads the authenticated account cart when a Bearer token is provided;
+        otherwise uses the opaque guest cart cookie.
       operationId: getCart
       parameters:
-        - $ref: '#/components/parameters/GuestCartCookie'
+      - $ref: '#/components/parameters/GuestCartCookie'
       security:
-        - {}
-        - BearerAuth: []
+      - {}
+      - BearerAuth: []
+      - XOpKey: []
       responses:
         '200':
-          description: Current cart with current prices, available stock, and any cart warnings.
+          description: Current cart with current prices, available stock, and any
+            cart warnings.
           headers:
             Set-Cookie:
-              description: Sets or refreshes the HttpOnly guest cart cookie when the cart is anonymous.
+              description: Sets or refreshes the HttpOnly guest cart cookie when the
+                cart is anonymous.
               schema:
                 type: string
           content:
@@ -174,12 +196,12 @@ paths:
                 $ref: '#/components/schemas/CartResponse'
               example:
                 lines:
-                  - bgg_id: 274364
-                    name: Watergate
-                    quantity: 2
-                    available_stock: 10
-                    unit_price: 90000.0
-                    subtotal: 180000.0
+                - bgg_id: 274364
+                  name: Watergate
+                  quantity: 2
+                  available_stock: 10
+                  unit_price: 90000.0
+                  subtotal: 180000.0
                 total: 180000.0
                 warnings: []
         '502':
@@ -191,14 +213,15 @@ paths:
   /api/v1/cart/items:
     post:
       tags:
-        - Cart
+      - Cart
       summary: Add a product to the cart
       operationId: addCartItem
       security:
-        - {}
-        - BearerAuth: []
+      - {}
+      - BearerAuth: []
+      - XOpKey: []
       parameters:
-        - $ref: '#/components/parameters/GuestCartCookie'
+      - $ref: '#/components/parameters/GuestCartCookie'
       requestBody:
         required: true
         content:
@@ -210,7 +233,8 @@ paths:
           description: Product added and cart totals recalculated.
           headers:
             Set-Cookie:
-              description: Sets or refreshes the HttpOnly guest cart cookie when the cart is anonymous.
+              description: Sets or refreshes the HttpOnly guest cart cookie when the
+                cart is anonymous.
               schema:
                 type: string
           content:
@@ -230,7 +254,8 @@ paths:
               schema:
                 $ref: '#/components/schemas/CartResponse'
         '409':
-          description: Requested quantity exceeds current stock; the existing cart is returned with a warning.
+          description: Requested quantity exceeds current stock; the existing cart
+            is returned with a warning.
           content:
             application/json:
               schema:
@@ -244,21 +269,22 @@ paths:
   /api/v1/cart/items/{bgg_id}:
     patch:
       tags:
-        - Cart
+      - Cart
       summary: Set a cart item's quantity
       operationId: updateCartItemQuantity
       security:
-        - {}
-        - BearerAuth: []
+      - {}
+      - BearerAuth: []
+      - XOpKey: []
       parameters:
-        - $ref: '#/components/parameters/GuestCartCookie'
-        - name: bgg_id
-          in: path
-          required: true
-          schema:
-            type: integer
-            minimum: 1
-            maximum: 2147483647
+      - $ref: '#/components/parameters/GuestCartCookie'
+      - name: bgg_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 2147483647
       requestBody:
         required: true
         content:
@@ -270,7 +296,8 @@ paths:
           description: Quantity updated and cart totals recalculated.
           headers:
             Set-Cookie:
-              description: Sets or refreshes the HttpOnly guest cart cookie when the cart is anonymous.
+              description: Sets or refreshes the HttpOnly guest cart cookie when the
+                cart is anonymous.
               schema:
                 type: string
           content:
@@ -290,7 +317,8 @@ paths:
               schema:
                 $ref: '#/components/schemas/CartResponse'
         '409':
-          description: Requested quantity exceeds current stock; the existing cart is returned with a warning.
+          description: Requested quantity exceeds current stock; the existing cart
+            is returned with a warning.
           content:
             application/json:
               schema:
@@ -303,27 +331,29 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
     delete:
       tags:
-        - Cart
+      - Cart
       summary: Remove a product from the cart
       operationId: removeCartItem
       security:
-        - {}
-        - BearerAuth: []
+      - {}
+      - BearerAuth: []
+      - XOpKey: []
       parameters:
-        - $ref: '#/components/parameters/GuestCartCookie'
-        - name: bgg_id
-          in: path
-          required: true
-          schema:
-            type: integer
-            minimum: 1
-            maximum: 2147483647
+      - $ref: '#/components/parameters/GuestCartCookie'
+      - name: bgg_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 2147483647
       responses:
         '200':
           description: Product removed and cart totals recalculated.
           headers:
             Set-Cookie:
-              description: Sets or refreshes the HttpOnly guest cart cookie when the cart is anonymous.
+              description: Sets or refreshes the HttpOnly guest cart cookie when the
+                cart is anonymous.
               schema:
                 type: string
           content:
@@ -345,16 +375,16 @@ paths:
   /api/v1/games/{slug}:
     get:
       tags:
-        - Games
+      - Games
       summary: Get a board-game detail by slug
       operationId: getGameDetail
       parameters:
-        - name: slug
-          in: path
-          required: true
-          schema:
-            type: string
-            minLength: 1
+      - name: slug
+        in: path
+        required: true
+        schema:
+          type: string
+          minLength: 1
       responses:
         '200':
           description: Product detail with approved reviews.
@@ -372,7 +402,7 @@ paths:
                 min_age: 12
                 weight: 2.25
                 category:
-                  - Juegos de Estrategia
+                - Juegos de Estrategia
                 price: 90000.0
                 quantity: 10
                 publisher: Salt & Pepper Games
@@ -393,21 +423,26 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+      security:
+      - {}
+      - BearerAuth: []
+      - XOpKey: []
   /api/v1/games/{slug}/reviews:
     post:
       tags:
-        - Reviews
+      - Reviews
       summary: Submit a board-game review
       operationId: createGameReview
       security:
-        - BearerAuth: []
+      - BearerAuth: []
+      - XOpKey: []
       parameters:
-        - name: slug
-          in: path
-          required: true
-          schema:
-            type: string
-            minLength: 1
+      - name: slug
+        in: path
+        required: true
+        schema:
+          type: string
+          minLength: 1
       requestBody:
         required: true
         content:
@@ -446,22 +481,25 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '502':
-          description: The BFF could not obtain a valid response from the Core GraphQL service.
+          description: The BFF could not obtain a valid response from the Core GraphQL
+            service.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/AuthErrorResponse'
               example:
                 errors:
-                  - code: UPSTREAM_ERROR
-                    message: upstream GraphQL request failed
+                - code: UPSTREAM_ERROR
+                  message: upstream GraphQL request failed
   /api/v1/wishlist:
     get:
-      tags: [Wishlist]
+      tags:
+      - Wishlist
       summary: List the authenticated customer's wishlist
       operationId: listWishlist
       security:
-        - BearerAuth: []
+      - BearerAuth: []
+      - XOpKey: []
       responses:
         '200':
           description: Wishlist products owned by the authenticated customer.
@@ -471,19 +509,20 @@ paths:
                 $ref: '#/components/schemas/WishlistResponse'
               example:
                 items:
-                  - bgg_id: 274364
-                    name: Watergate
-                    release_year: 2019
-                    min_players: 2
-                    max_players: 2
-                    playing_time_minutes: 60
-                    min_age: 12
-                    weight: 2.25
-                    category: [Strategy]
-                    price: 90000.0
-                    quantity: 10
-                    publisher: Salt & Pepper Games
-                    image_url: /media/portadas/2743640.webp
+                - bgg_id: 274364
+                  name: Watergate
+                  release_year: 2019
+                  min_players: 2
+                  max_players: 2
+                  playing_time_minutes: 60
+                  min_age: 12
+                  weight: 2.25
+                  category:
+                  - Strategy
+                  price: 90000.0
+                  quantity: 10
+                  publisher: Salt & Pepper Games
+                  image_url: /media/portadas/2743640.webp
         '401':
           description: Missing or invalid bearer token.
           content:
@@ -497,11 +536,13 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
     post:
-      tags: [Wishlist]
+      tags:
+      - Wishlist
       summary: Add a product to the authenticated customer's wishlist
       operationId: addWishlistItem
       security:
-        - BearerAuth: []
+      - BearerAuth: []
+      - XOpKey: []
       requestBody:
         required: true
         content:
@@ -518,7 +559,8 @@ paths:
               schema:
                 $ref: '#/components/schemas/Product'
         '400':
-          description: The request body is invalid or the identifier is not a positive GraphQL Int.
+          description: The request body is invalid or the identifier is not a positive
+            GraphQL Int.
           content:
             application/json:
               schema:
@@ -543,21 +585,24 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
   /api/v1/wishlist/{bgg_id}:
     delete:
-      tags: [Wishlist]
+      tags:
+      - Wishlist
       summary: Remove a product from the authenticated customer's wishlist
       operationId: removeWishlistItem
       security:
-        - BearerAuth: []
+      - BearerAuth: []
+      - XOpKey: []
       parameters:
-        - name: bgg_id
-          in: path
-          required: true
-          description: Positive BoardGameGeek product identifier within GraphQL Int range.
-          schema:
-            type: integer
-            minimum: 1
-            maximum: 2147483647
-          example: 274364
+      - name: bgg_id
+        in: path
+        required: true
+        description: Positive BoardGameGeek product identifier within GraphQL Int
+          range.
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 2147483647
+        example: 274364
       responses:
         '200':
           description: The removed product, including the existing BFF product fields.
@@ -591,11 +636,13 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
   /api/v1/checkout:
     post:
-      tags: [Orders]
+      tags:
+      - Orders
       summary: Create an order and initialize checkout payment
       operationId: checkout
       security:
-        - BearerAuth: []
+      - BearerAuth: []
+      - XOpKey: []
       requestBody:
         required: true
         content:
@@ -639,8 +686,8 @@ paths:
             application/json:
               schema:
                 oneOf:
-                  - $ref: '#/components/schemas/ErrorResponse'
-                  - $ref: '#/components/schemas/OrderErrorResponse'
+                - $ref: '#/components/schemas/ErrorResponse'
+                - $ref: '#/components/schemas/OrderErrorResponse'
         '503':
           description: Payments are not configured in Core.
           content:
@@ -649,11 +696,13 @@ paths:
                 $ref: '#/components/schemas/OrderErrorResponse'
   /api/v1/checkout/confirm:
     post:
-      tags: [Orders]
+      tags:
+      - Orders
       summary: Confirm payment with Core and return the order
       operationId: confirmCheckoutPayment
       security:
-        - BearerAuth: []
+      - BearerAuth: []
+      - XOpKey: []
       requestBody:
         required: true
         content:
@@ -699,11 +748,13 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
   /api/v1/orders:
     get:
-      tags: [Orders]
+      tags:
+      - Orders
       summary: List the authenticated customer's orders
       operationId: listOrders
       security:
-        - BearerAuth: []
+      - BearerAuth: []
+      - XOpKey: []
       responses:
         '200':
           description: Orders belonging to the authenticated customer.
@@ -725,21 +776,24 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
   /api/v1/orders/{order_id}:
     get:
-      tags: [Orders]
+      tags:
+      - Orders
       summary: Get an owned order with lines and payment details
       operationId: getOrder
       security:
-        - BearerAuth: []
+      - BearerAuth: []
+      - XOpKey: []
       parameters:
-        - name: order_id
-          in: path
-          required: true
-          schema:
-            type: string
-            format: uuid
+      - name: order_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
       responses:
         '200':
-          description: Order detail including shipping, invoice metadata, and rejection reason.
+          description: Order detail including shipping, invoice metadata, and rejection
+            reason.
           content:
             application/json:
               schema:
@@ -770,18 +824,20 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
   /api/v1/orders/{order_id}/retry-payment:
     post:
-      tags: [Orders]
+      tags:
+      - Orders
       summary: Initialize a new payment attempt for a rejected order
       operationId: retryOrderPayment
       security:
-        - BearerAuth: []
+      - BearerAuth: []
+      - XOpKey: []
       parameters:
-        - name: order_id
-          in: path
-          required: true
-          schema:
-            type: string
-            format: uuid
+      - name: order_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
       responses:
         '200':
           description: Order and new checkout URL.
@@ -819,8 +875,8 @@ paths:
             application/json:
               schema:
                 oneOf:
-                  - $ref: '#/components/schemas/ErrorResponse'
-                  - $ref: '#/components/schemas/OrderErrorResponse'
+                - $ref: '#/components/schemas/ErrorResponse'
+                - $ref: '#/components/schemas/OrderErrorResponse'
         '503':
           description: Payments are not configured in Core.
           content:
@@ -829,18 +885,20 @@ paths:
                 $ref: '#/components/schemas/OrderErrorResponse'
   /api/v1/orders/{order_id}/invoice:
     get:
-      tags: [Orders]
+      tags:
+      - Orders
       summary: Download the authenticated customer's invoice PDF
       operationId: downloadOrderInvoice
       security:
-        - BearerAuth: []
+      - BearerAuth: []
+      - XOpKey: []
       parameters:
-        - name: order_id
-          in: path
-          required: true
-          schema:
-            type: string
-            format: uuid
+      - name: order_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
       responses:
         '200':
           description: Invoice PDF streamed from Core.
@@ -879,12 +937,22 @@ components:
       type: http
       scheme: bearer
       bearerFormat: JWT
+    XOpKey:
+      type: apiKey
+      in: header
+      name: X-Op-Key
+      description: Operations key for privileged internal operations (one-time raw
+        key shown at creation).
   parameters:
     GuestCartCookie:
       name: cart_id
       in: cookie
       required: false
-      description: Opaque guest cart identifier issued by the BFF in an HttpOnly, SameSite=Lax cookie. The default name is cart_id and can be changed with CART_COOKIE_NAME. Secure defaults on outside debug/development and is configurable with CART_COOKIE_SECURE. This is not a user identifier; Core selects authenticated carts from the Bearer token.
+      description: Opaque guest cart identifier issued by the BFF in an HttpOnly,
+        SameSite=Lax cookie. The default name is cart_id and can be changed with CART_COOKIE_NAME.
+        Secure defaults on outside debug/development and is configurable with CART_COOKIE_SECURE.
+        This is not a user identifier; Core selects authenticated carts from the Bearer
+        token.
       schema:
         type: string
     Search:
@@ -967,15 +1035,15 @@ components:
       schema:
         type: integer
         minimum: 1
-        maximum: 100
-        default: 20
-      example: 20
+        maximum: 200
+        default: 50
+      example: 50
   schemas:
     CartItemRequest:
       type: object
       required:
-        - bgg_id
-        - quantity
+      - bgg_id
+      - quantity
       properties:
         bgg_id:
           type: integer
@@ -989,7 +1057,7 @@ components:
     CartQuantityRequest:
       type: object
       required:
-        - quantity
+      - quantity
       properties:
         quantity:
           type: integer
@@ -998,12 +1066,12 @@ components:
     CartLine:
       type: object
       required:
-        - bgg_id
-        - name
-        - quantity
-        - available_stock
-        - unit_price
-        - subtotal
+      - bgg_id
+      - name
+      - quantity
+      - available_stock
+      - unit_price
+      - subtotal
       properties:
         bgg_id:
           type: integer
@@ -1026,8 +1094,8 @@ components:
     CartWarning:
       type: object
       required:
-        - code
-        - message
+      - code
+      - message
       properties:
         field:
           type: array
@@ -1042,9 +1110,9 @@ components:
     CartResponse:
       type: object
       required:
-        - lines
-        - total
-        - warnings
+      - lines
+      - total
+      - warnings
       properties:
         lines:
           type: array
@@ -1061,8 +1129,8 @@ components:
     CreateReviewRequest:
       type: object
       required:
-        - rating
-        - body
+      - rating
+      - body
       properties:
         rating:
           type: integer
@@ -1075,23 +1143,23 @@ components:
     CreateReviewResponse:
       type: object
       required:
-        - created
-        - status
-        - created_at
+      - created
+      - status
+      - created_at
       properties:
         created:
           type: boolean
         status:
           type: string
           enum:
-            - PENDING
+          - PENDING
         created_at:
           type: string
           format: date-time
     ReviewSummary:
       type: object
       required:
-        - approved_review_count
+      - approved_review_count
       properties:
         approved_review_count:
           type: integer
@@ -1103,9 +1171,9 @@ components:
     ApprovedReview:
       type: object
       required:
-        - rating
-        - body
-        - created_at
+      - rating
+      - body
+      - created_at
       properties:
         rating:
           type: integer
@@ -1119,21 +1187,21 @@ components:
     ProductDetail:
       type: object
       required:
-        - bgg_id
-        - name
-        - release_year
-        - min_players
-        - max_players
-        - playing_time_minutes
-        - min_age
-        - weight
-        - category
-        - price
-        - publisher
-        - image_url
-        - quantity
-        - review_summary
-        - approved_reviews
+      - bgg_id
+      - name
+      - release_year
+      - min_players
+      - max_players
+      - playing_time_minutes
+      - min_age
+      - weight
+      - category
+      - price
+      - publisher
+      - image_url
+      - quantity
+      - review_summary
+      - approved_reviews
       properties:
         bgg_id:
           type: integer
@@ -1178,10 +1246,10 @@ components:
     RegisterRequest:
       type: object
       required:
-        - email
-        - password
-        - first_name
-        - last_name
+      - email
+      - password
+      - first_name
+      - last_name
       properties:
         email:
           type: string
@@ -1205,8 +1273,8 @@ components:
     LoginRequest:
       type: object
       required:
-        - email
-        - password
+      - email
+      - password
       properties:
         email:
           type: string
@@ -1222,11 +1290,11 @@ components:
     AuthUser:
       type: object
       required:
-        - id
-        - email
-        - first_name
-        - last_name
-        - is_active
+      - id
+      - email
+      - first_name
+      - last_name
+      - is_active
       properties:
         id:
           type: string
@@ -1242,8 +1310,8 @@ components:
     AuthSession:
       type: object
       required:
-        - access_token
-        - refresh_token
+      - access_token
+      - refresh_token
       properties:
         access_token:
           type: string
@@ -1257,7 +1325,7 @@ components:
     AuthError:
       type: object
       required:
-        - message
+      - message
       properties:
         field:
           type: array
@@ -1272,7 +1340,7 @@ components:
     AuthErrorResponse:
       type: object
       required:
-        - errors
+      - errors
       properties:
         errors:
           type: array
@@ -1281,7 +1349,7 @@ components:
     RegisterResponse:
       type: object
       required:
-        - user
+      - user
       properties:
         user:
           $ref: '#/components/schemas/AuthUser'
@@ -1291,8 +1359,8 @@ components:
     LoginResponse:
       type: object
       required:
-        - user
-        - session
+      - user
+      - session
       properties:
         user:
           $ref: '#/components/schemas/AuthUser'
@@ -1301,19 +1369,19 @@ components:
     Product:
       type: object
       required:
-        - bgg_id
-        - name
-        - release_year
-        - min_players
-        - max_players
-        - playing_time_minutes
-        - min_age
-        - weight
-        - category
-        - price
-        - publisher
-        - image_url
-        - quantity
+      - bgg_id
+      - name
+      - release_year
+      - min_players
+      - max_players
+      - playing_time_minutes
+      - min_age
+      - weight
+      - category
+      - price
+      - publisher
+      - image_url
+      - quantity
       properties:
         bgg_id:
           type: integer
@@ -1346,7 +1414,7 @@ components:
           items:
             type: string
           example:
-            - Juegos de Estrategia
+          - Juegos de Estrategia
         price:
           type: number
           format: double
@@ -1365,17 +1433,20 @@ components:
     WishlistAddRequest:
       type: object
       additionalProperties: false
-      required: [bgg_id]
+      required:
+      - bgg_id
       properties:
         bgg_id:
           type: integer
           minimum: 1
           maximum: 2147483647
-          description: Product identifier. User identity is derived exclusively from the bearer token.
+          description: Product identifier. User identity is derived exclusively from
+            the bearer token.
           example: 274364
     WishlistResponse:
       type: object
-      required: [items]
+      required:
+      - items
       properties:
         items:
           type: array
@@ -1384,11 +1455,11 @@ components:
     ProductPage:
       type: object
       required:
-        - items
-        - page
-        - page_size
-        - total
-        - total_pages
+      - items
+      - page
+      - page_size
+      - total
+      - total_pages
       properties:
         items:
           type: array
@@ -1414,11 +1485,14 @@ components:
     CheckoutRequest:
       type: object
       additionalProperties: false
-      required: [shipping_mode]
+      required:
+      - shipping_mode
       properties:
         shipping_mode:
           type: string
-          enum: [standard, pickup]
+          enum:
+          - standard
+          - pickup
         address:
           $ref: '#/components/schemas/ShippingAddress'
     ShippingAddress:
@@ -1443,22 +1517,26 @@ components:
     ConfirmPaymentRequest:
       type: object
       additionalProperties: false
-      required: [order_id, payment_id]
+      required:
+      - order_id
+      - payment_id
       properties:
         order_id:
           type: string
           format: uuid
         payment_id:
           oneOf:
-            - type: string
-              minLength: 1
-              maxLength: 128
-              pattern: '^[A-Za-z0-9._-]+$'
-            - type: integer
-              minimum: 0
+          - type: string
+            minLength: 1
+            maxLength: 128
+            pattern: ^[A-Za-z0-9._-]+$
+          - type: integer
+            minimum: 0
     CheckoutResponse:
       type: object
-      required: [order, init_point]
+      required:
+      - order
+      - init_point
       properties:
         order:
           $ref: '#/components/schemas/PurchaseOrder'
@@ -1467,13 +1545,15 @@ components:
           format: uri
     OrderResponse:
       type: object
-      required: [order]
+      required:
+      - order
       properties:
         order:
           $ref: '#/components/schemas/PurchaseOrder'
     OrderListResponse:
       type: object
-      required: [orders]
+      required:
+      - orders
       properties:
         orders:
           type: array
@@ -1481,7 +1561,14 @@ components:
             $ref: '#/components/schemas/PurchaseOrder'
     PurchaseOrder:
       type: object
-      required: [id, status, total, currency, shipping_mode, created_at, lines]
+      required:
+      - id
+      - status
+      - total
+      - currency
+      - shipping_mode
+      - created_at
+      - lines
       properties:
         id:
           type: string
@@ -1495,7 +1582,9 @@ components:
           type: string
         shipping_mode:
           type: string
-          enum: [standard, pickup]
+          enum:
+          - standard
+          - pickup
         recipient:
           type: string
           nullable: true
@@ -1531,11 +1620,16 @@ components:
             $ref: '#/components/schemas/PurchaseOrderLine'
         invoice:
           allOf:
-            - $ref: '#/components/schemas/Invoice'
+          - $ref: '#/components/schemas/Invoice'
           nullable: true
     PurchaseOrderLine:
       type: object
-      required: [bgg_id, name, unit_price, quantity, subtotal]
+      required:
+      - bgg_id
+      - name
+      - unit_price
+      - quantity
+      - subtotal
       properties:
         bgg_id:
           type: integer
@@ -1551,7 +1645,10 @@ components:
           format: float
     Invoice:
       type: object
-      required: [number, issued_at, total]
+      required:
+      - number
+      - issued_at
+      - total
       properties:
         number:
           type: integer
@@ -1564,13 +1661,16 @@ components:
           format: float
     OrderErrorResponse:
       type: object
-      required: [errors]
+      required:
+      - errors
       properties:
         errors:
           type: array
           items:
             type: object
-            required: [code, message]
+            required:
+            - code
+            - message
             properties:
               code:
                 type: string
@@ -1584,7 +1684,7 @@ components:
     ErrorResponse:
       type: object
       required:
-        - error
+      - error
       properties:
         error:
           type: string
