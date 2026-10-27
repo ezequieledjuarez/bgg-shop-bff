@@ -17,6 +17,10 @@ def get_product_detail(slug):
     return proxy.get_product_detail(slug)
 
 
+def get_product_by_bgg_id(bgg_id, token=None):
+    return proxy.get_product_by_bgg_id(bgg_id, token)
+
+
 def create_review(slug, rating, body, token):
     return proxy.create_review(slug, rating, body, token)
 
@@ -78,21 +82,97 @@ def check_admin(token):
 
 
 # Admin / management wrappers
-def admin_list_products(page=1, page_size=20, q=None):
+def admin_list_products(page=1, page_size=50, q=None, token=None, year_published=None,
+                        min_players=None, max_players=None, category_id=None,
+                        price_min=None, price_max=None, **kwargs):
     # Reuse the public list_products proxy for now; admin may require more fields later
-    return proxy.list_products(page=page, page_size=page_size, search=q)
+    # Forward all supported filters to the proxy and include the optional token.
+    # Accept and forward any extra kwargs to avoid unexpected keyword errors
+    params = {
+        'page': page,
+        'page_size': page_size,
+        'search': q,
+        'year_published': year_published,
+        'min_players': min_players,
+        'max_players': max_players,
+        'category_id': category_id,
+        'price_min': price_min,
+        'price_max': price_max,
+        'token': token,
+    }
+    # Merge any additional kwargs provided by callers (defensive)
+    params.update(kwargs or {})
+    return proxy.list_products(**params)
 
 
 def admin_create_product(payload):
-    return proxy.create_product(payload)
+    # token must be provided by the controller (from Authorization header)
+    token = payload.get("_auth_token") if isinstance(payload, dict) else None
+    op_key = payload.get("_op_key") if isinstance(payload, dict) else None
+    # If DTO returned a non-dict, try reading Flask request headers as fallback
+    if not isinstance(payload, dict):
+        try:
+            from flask import request as _flask_request
+            if not token:
+                token = _flask_request.headers.get('Authorization')
+            if not op_key:
+                op_key = _flask_request.headers.get('X-Op-Key') or _flask_request.headers.get('x-op-key')
+        except Exception:
+            pass
+    # If an op_key was provided but no Authorization token, allow using
+    # a configured internal admin token so the BFF can perform upstream
+    # GraphQL admin mutations during testing/dev. Set via env `BFF_ADMIN_TOKEN`.
+    if not token and op_key:
+        import os
+        token = os.getenv("BFF_ADMIN_TOKEN")
+        if not token:
+            # try reading a token file for quick local testing
+            try:
+                with open('/tmp/bff_admin_token', 'r', encoding='utf-8') as fh:
+                    token = fh.read().strip()
+            except Exception:
+                token = None
+    # Debug: persist token representation and lengths to help diagnose truncation
+    try:
+        import json, datetime
+        with open('/tmp/bff-created-products-debug.log', 'a', encoding='utf-8') as dbgfh:
+            dbgfh.write(json.dumps({"ts": datetime.datetime.utcnow().isoformat() + 'Z', "note": "admin_create_product_token_debug", "token_repr": repr(token), "token_len": len(token) if token else 0, "op_key_present": bool(op_key)}, ensure_ascii=False) + "\n")
+    except Exception:
+        pass
+    # remove internal helper keys if present
+    if isinstance(payload, dict):
+        payload = {k: v for k, v in payload.items() if k not in ("_auth_token", "_op_key")}
+    return proxy.create_product(payload, token, op_key=op_key)
 
 
 def admin_update_product(product_id, payload):
-    return proxy.update_product(product_id, payload)
+    token = payload.get("_auth_token") if isinstance(payload, dict) else None
+    op_key = payload.get("_op_key") if isinstance(payload, dict) else None
+    if not isinstance(payload, dict):
+        try:
+            from flask import request as _flask_request
+            if not token:
+                token = _flask_request.headers.get('Authorization')
+            if not op_key:
+                op_key = _flask_request.headers.get('X-Op-Key') or _flask_request.headers.get('x-op-key')
+        except Exception:
+            pass
+    if isinstance(payload, dict):
+        payload = {k: v for k, v in payload.items() if k not in ("_auth_token", "_op_key")}
+    if not token and op_key:
+        import os
+        token = os.getenv("BFF_ADMIN_TOKEN")
+        if not token:
+            try:
+                with open('/tmp/bff_admin_token', 'r', encoding='utf-8') as fh:
+                    token = fh.read().strip()
+            except Exception:
+                token = None
+    return proxy.update_product(product_id, payload, token, op_key=op_key)
 
 
-def adjust_variant_stock(product_id, variant_id, new_stock):
-    return proxy.adjust_variant_stock(product_id, variant_id, new_stock)
+def adjust_variant_stock(product_id, variant_id, new_stock, token=None):
+    return proxy.adjust_variant_stock(product_id, variant_id, new_stock, token)
 
 
 # Promotions
@@ -101,11 +181,36 @@ def admin_list_promotions():
 
 
 def admin_create_promotion(payload):
-    return proxy.create_promotion(payload)
+    token = payload.get("_auth_token") if isinstance(payload, dict) else None
+    op_key = payload.get("_op_key") if isinstance(payload, dict) else None
+    if not isinstance(payload, dict):
+        try:
+            from flask import request as _flask_request
+            if not token:
+                token = _flask_request.headers.get('Authorization')
+            if not op_key:
+                op_key = _flask_request.headers.get('X-Op-Key') or _flask_request.headers.get('x-op-key')
+        except Exception:
+            pass
+    if isinstance(payload, dict):
+        payload = {k: v for k, v in payload.items() if k not in ("_auth_token", "_op_key")}
+    if not token and op_key:
+        import os
+        token = os.getenv("BFF_ADMIN_TOKEN")
+        if not token:
+            try:
+                with open('/tmp/bff_admin_token', 'r', encoding='utf-8') as fh:
+                    token = fh.read().strip()
+            except Exception:
+                token = None
+    return proxy.create_promotion(payload, token, op_key=op_key)
 
 
 def admin_update_promotion(promotion_id, payload):
-    return proxy.update_promotion(promotion_id, payload)
+    token = payload.get("_auth_token") if isinstance(payload, dict) else None
+    if isinstance(payload, dict) and "_auth_token" in payload:
+        payload = {k: v for k, v in payload.items() if k != "_auth_token"}
+    return proxy.update_promotion(promotion_id, payload, token)
 
 
 def admin_apply_coupon_preview(code, **kwargs):

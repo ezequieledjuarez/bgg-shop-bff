@@ -9,7 +9,7 @@ import threading
 import hashlib
 
 
-MAX_PAGE_SIZE = 100
+MAX_PAGE_SIZE = 200
 DEFAULT_GRAPHQL_URL = "http://localhost:8000/graphql/"
 
 logger = logging.getLogger(__name__)
@@ -198,8 +198,13 @@ def _pagination_value(value, name):
         raise ValueError(f"{name} must be a positive integer")
     if parsed < 1:
         raise ValueError(f"{name} must be a positive integer")
+    # Enforce maximum page size: clamp to MAX_PAGE_SIZE instead of raising.
     if name == "page_size" and parsed > MAX_PAGE_SIZE:
-        raise ValueError(f"{name} must not exceed {MAX_PAGE_SIZE}")
+        try:
+            logger.warning("Requested page_size %s exceeds MAX_PAGE_SIZE %s; clamping to max", parsed, MAX_PAGE_SIZE)
+        except Exception:
+            pass
+        return MAX_PAGE_SIZE
     return parsed
 
 
@@ -234,7 +239,7 @@ def _optional_decimal(value, name):
 
 def list_products(
     page=1,
-    page_size=20,
+    page_size=50,
     search=None,
     year_published=None,
     min_players=None,
@@ -436,9 +441,55 @@ def list_products(
     # end of list_products
 
 
-def _graphql_request(query, variables, token=None, map_wishlist_errors=False):
+def _graphql_request(query, variables, token=None, op_key=None, map_wishlist_errors=False):
     request_id = str(uuid.uuid4())
-    headers = {"Authorization": token} if token else {}
+    headers = {}
+    if token:
+        headers["Authorization"] = token
+    # Prefer explicit op_key argument, otherwise forward incoming header when present
+    try:
+        if op_key:
+            headers['X-Op-Key'] = op_key
+        else:
+            from flask import request as _flask_request
+            found = _flask_request.headers.get('X-Op-Key') or _flask_request.headers.get('x-op-key')
+            if found:
+                headers['X-Op-Key'] = found
+    except Exception:
+        # not running in Flask request context or header missing
+        pass
+    # Persist a compact trace of forwarded headers for offline debugging
+    try:
+        import json, datetime
+        trace = {
+            'ts': datetime.datetime.utcnow().isoformat() + 'Z',
+            'note': '_graphql_request_forwarded_headers',
+            'request_id': request_id,
+            'forwarded_headers': {k: (v[:20] + '...') if isinstance(v, str) and len(v) > 20 else v for k,v in headers.items()},
+            'pid': os.getpid(),
+            'correlation_id': None,
+        }
+        try:
+            # try to obtain correlation id from flask g if available
+            from flask import g as _g
+            cid = getattr(_g, 'correlation_id', None)
+            if cid:
+                trace['correlation_id'] = cid
+        except Exception:
+            pass
+        with open('/tmp/bff-calltrace.log', 'a', encoding='utf-8') as fh:
+            fh.write(json.dumps(trace, ensure_ascii=False) + "\n")
+    except Exception:
+        pass
+    try:
+        # Also persist incoming request header snapshot for correlation
+        from flask import request as _flask_request
+        import json, datetime
+        incoming = {k: (v[:40] + '...') if isinstance(v, str) and len(v) > 40 else v for k, v in dict(_flask_request.headers).items()}
+        with open('/tmp/bff-calltrace.log', 'a', encoding='utf-8') as fh:
+            fh.write(json.dumps({'ts': datetime.datetime.utcnow().isoformat() + 'Z', 'note': '_graphql_request_incoming_headers', 'request_id': request_id, 'incoming_headers': incoming}, ensure_ascii=False) + "\n")
+    except Exception:
+        pass
     # Debug logging to capture outgoing GraphQL requests/responses for triage
     try:
         logger.info("Outgoing GraphQL request headers=%s variables=%s", headers, variables)
@@ -466,6 +517,50 @@ def _graphql_request(query, variables, token=None, map_wishlist_errors=False):
     except Exception:
         pass
     try:
+        # Temporary diagnostic snapshot before making the outgoing HTTP call.
+        # Persist a compact diagnostic record (url, headers, variables, stack)
+        # to help triage intermittent cases where headers become empty.
+        try:
+            import traceback, json, datetime, os
+
+            diag = {
+                "request_id": request_id,
+                "ts": datetime.datetime.utcnow().isoformat() + "Z",
+                "note": "outgoing_graphql_diagnostic",
+                "url": os.getenv("SALEOR_GRAPHQL_URL", DEFAULT_GRAPHQL_URL),
+                "headers": headers,
+                "variables": variables,
+                "stack": traceback.format_stack()[-8:],
+            }
+            with open('/tmp/bff-proxy-diagnostic.log', 'a', encoding='utf-8') as fh:
+                fh.write(json.dumps(diag, ensure_ascii=False) + "\n")
+        except Exception:
+            # swallow diagnostic failures
+            pass
+
+        logger.info("Performing GraphQL POST to %s headers=%s", os.getenv("SALEOR_GRAPHQL_URL", DEFAULT_GRAPHQL_URL), headers)
+        # Persist a complete outgoing snapshot for offline inspection (unique per request)
+        try:
+            import json as _json, datetime as _datetime, os as _os
+            diag_file = f"/tmp/bff-outgoing-{request_id}.json"
+            out_full = {
+                "request_id": request_id,
+                "ts": _datetime.datetime.utcnow().isoformat() + "Z",
+                "note": "outgoing_graphql_full",
+                "url": os.getenv("SALEOR_GRAPHQL_URL", DEFAULT_GRAPHQL_URL),
+                "headers": headers,
+                "variables": variables,
+                "query": query,
+                "pid": _os.getpid(),
+            }
+            try:
+                with open(diag_file, 'w', encoding='utf-8') as _fh:
+                    _fh.write(_json.dumps(out_full, ensure_ascii=False, indent=2))
+            except Exception:
+                pass
+        except Exception:
+            pass
+
         response = requests.post(
             os.getenv("SALEOR_GRAPHQL_URL", DEFAULT_GRAPHQL_URL),
             json={"query": query, "variables": variables},
@@ -575,6 +670,94 @@ def get_product_detail(slug):
         }
     except (KeyError, TypeError) as exc:
         raise UpstreamError("GraphQL upstream returned an invalid product payload") from exc
+
+
+def get_product_by_bgg_id(bgg_id, token=None):
+    """
+    Attempt a direct GraphQL query for a product by its numeric BGG id.
+    If the upstream schema supports `productByBggId`, use it. Otherwise
+    fall back to paginated `products` queries and scan for the matching id.
+    Returns the same normalized product dict as `get_product_detail`.
+    """
+    # First, try a direct field that some backends may expose.
+    query_direct = """
+    query ProductByBggId($bggId: Int!) {
+      productByBggId(bggId: $bggId) {
+        bggId name releaseYear minPlayers maxPlayers playingTimeMinutes minAge
+        weight category price quantity publisher imageUrl
+        reviewSummary { approvedReviewCount averageRating }
+        approvedReviews { rating body createdAt }
+      }
+    }
+    """
+    try:
+        # Debug: persist that we're attempting direct productByBggId lookup
+        try:
+            import json, datetime
+            with open('/tmp/bff-graphql-outgoing.log', 'a', encoding='utf-8') as fh:
+                fh.write(json.dumps({'ts': datetime.datetime.utcnow().isoformat() + 'Z', 'note': 'productByBggId_attempt', 'bgg_id': int(bgg_id)}, ensure_ascii=False) + "\n")
+        except Exception:
+            pass
+        payload = _graphql_request(query_direct, {"bggId": int(bgg_id)}, token)
+        product = (payload.get("data") or {}).get("productByBggId")
+        if product is None:
+            # upstream does not have this field or returned null; fall through
+            raise UpstreamError("Product not found by direct bggId query", "PRODUCT_NOT_FOUND")
+        # reuse the existing mapping logic
+        try:
+            return {
+                "bgg_id": product["bggId"],
+                "name": product["name"],
+                "weight": product["weight"],
+                "category": product["category"],
+                "price": product["price"],
+                "quantity": product["quantity"],
+                "publisher": product["publisher"],
+                "release_year": product["releaseYear"],
+                "min_players": product["minPlayers"],
+                "max_players": product["maxPlayers"],
+                "playing_time_minutes": product["playingTimeMinutes"],
+                "min_age": product["minAge"],
+                "image_url": product["imageUrl"],
+                "review_summary": {
+                    "approved_review_count": product["reviewSummary"]["approvedReviewCount"],
+                    "average_rating": product["reviewSummary"]["averageRating"],
+                },
+                "approved_reviews": [
+                    {"rating": item["rating"], "body": item["body"], "created_at": item["createdAt"]}
+                    for item in product.get("approvedReviews") or []
+                ],
+            }
+        except (KeyError, TypeError) as exc:
+            raise UpstreamError("GraphQL upstream returned an invalid product payload") from exc
+    except UpstreamError as exc:
+        # If upstream doesn't support the direct field, fall back to scanning products
+        try:
+            # page through results with reasonably large page_size to find the product
+            page = 1
+            page_size = 200
+            max_pages = 10
+            while page <= max_pages:
+                try:
+                    res = list_products(page=page, page_size=page_size, token=token)
+                except Exception:
+                    # propagate underlying upstream errors
+                    raise
+                items = res.get("items") if isinstance(res, dict) else []
+                for item in items:
+                    if str(item.get("bgg_id")) == str(bgg_id):
+                        return item
+                try:
+                    total_pages = int(res.get("total_pages") or 0)
+                    if total_pages and page >= total_pages:
+                        break
+                except Exception:
+                    pass
+                page += 1
+            raise UpstreamError("The requested game does not exist", "PRODUCT_NOT_FOUND")
+        except UpstreamError:
+            # bubble up the not-found or upstream error
+            raise
 
 
 def create_review(slug, rating, body, token):
@@ -994,56 +1177,77 @@ def check_admin(token):
         # cache failures are non-fatal
         pass
 
-    # Make upstream call when cache miss
-    try:
-        payload = _graphql_request(query, {}, token)
-    except UpstreamError as exc:
-        # Persist upstream failure context for offline triage
+    # Make upstream call(s) when cache miss. If `me` is null/invalid, retry a few
+    # times before treating it as a negative result. Do NOT cache a null `me`
+    # result immediately to avoid prolonged denial due to transient upstream
+    # glitches.
+    attempts = int(os.getenv("WHOAMI_RETRY_COUNT", 2))
+    base_delay = float(os.getenv("WHOAMI_RETRY_BASE_DELAY_SECONDS", 0.25))
+    last_payload = None
+    for attempt in range(0, attempts + 1):
         try:
-            import json, datetime
-            out = {
-                "ts": datetime.datetime.utcnow().isoformat() + "Z",
-                "note": "check_admin upstream error",
-                "error": str(exc),
-                "token_masked": (token[:10] + "...") if token and isinstance(token, str) else None,
-            }
+            payload = _graphql_request(query, {}, token)
+        except UpstreamError as exc:
+            # Persist upstream failure context for offline triage
             try:
-                with open('/tmp/bff-graphql-error.log', 'a', encoding='utf-8') as fh:
-                    fh.write(json.dumps(out, ensure_ascii=False) + "\n")
+                import json, datetime
+                out = {
+                    "ts": datetime.datetime.utcnow().isoformat() + "Z",
+                    "note": "check_admin upstream error",
+                    "error": str(exc),
+                    "attempt": attempt,
+                    "token_masked": (token[:10] + "...") if token and isinstance(token, str) else None,
+                }
+                try:
+                    with open('/tmp/bff-graphql-error.log', 'a', encoding='utf-8') as fh:
+                        fh.write(json.dumps(out, ensure_ascii=False) + "\n")
+                except Exception:
+                    pass
             except Exception:
                 pass
-        except Exception:
-            pass
-        raise
+            # For network/parse errors, propagate immediately (don't retry)
+            raise
 
-    # If upstream returned GraphQL errors, surface as upstream failure
-    if payload.get("errors"):
-        try:
-            import json, datetime
-            out = {
-                "ts": datetime.datetime.utcnow().isoformat() + "Z",
-                "note": "check_admin returned errors",
-                "payload": payload,
-                "token_masked": (token[:10] + "...") if token and isinstance(token, str) else None,
-            }
+        # If upstream returned GraphQL errors, surface as upstream failure
+        if payload.get("errors"):
             try:
-                with open('/tmp/bff-graphql-error.log', 'a', encoding='utf-8') as fh:
-                    fh.write(json.dumps(out, ensure_ascii=False) + "\n")
+                import json, datetime
+                out = {
+                    "ts": datetime.datetime.utcnow().isoformat() + "Z",
+                    "note": "check_admin returned errors",
+                    "payload": payload,
+                    "attempt": attempt,
+                    "token_masked": (token[:10] + "...") if token and isinstance(token, str) else None,
+                }
+                try:
+                    with open('/tmp/bff-graphql-error.log', 'a', encoding='utf-8') as fh:
+                        fh.write(json.dumps(out, ensure_ascii=False) + "\n")
+                except Exception:
+                    pass
             except Exception:
                 pass
-        except Exception:
-            pass
-        raise UpstreamError("GraphQL upstream returned errors")
+            raise UpstreamError("GraphQL upstream returned errors")
 
-    me = (payload.get("data") or {}).get("me")
-    # If upstream returns null or unexpected shape for `me`, treat as non-admin
-    if not isinstance(me, dict):
+        last_payload = payload
+        me = (payload.get("data") or {}).get("me")
+        if isinstance(me, dict):
+            # Valid response — determine admin status and cache it
+            is_admin = bool(me.get("isStaff") or me.get("isSuperuser"))
+            try:
+                with _whoami_lock:
+                    _whoami_cache[key] = (time.time() + _WHOAMI_CACHE_TTL, is_admin, me)
+            except Exception:
+                pass
+            return is_admin
+
+        # me is null or invalid — persist a detailed note but DO NOT cache yet
         try:
             import json, datetime
             out = {
                 "ts": datetime.datetime.utcnow().isoformat() + "Z",
                 "note": "check_admin invalid me payload",
                 "payload": payload,
+                "attempt": attempt,
                 "token_masked": (token[:10] + "...") if token and isinstance(token, str) else None,
             }
             try:
@@ -1053,22 +1257,23 @@ def check_admin(token):
                 pass
         except Exception:
             pass
-        # Cache negative result to avoid repeated upstream calls for invalid/empty responses
+
+        # If we have more attempts left, wait a bit and retry
+        if attempt < attempts:
+            try:
+                time.sleep(base_delay * (2 ** attempt))
+                continue
+            except Exception:
+                # If sleep is interrupted, break and treat as negative below
+                pass
+
+        # Exhausted retries — cache a negative result (but store the raw me value)
         try:
             with _whoami_lock:
                 _whoami_cache[key] = (time.time() + _WHOAMI_CACHE_TTL, False, me)
         except Exception:
             pass
         return False
-
-    is_admin = bool(me.get("isStaff") or me.get("isSuperuser"))
-    # Cache the result
-    try:
-        with _whoami_lock:
-            _whoami_cache[key] = (time.time() + _WHOAMI_CACHE_TTL, is_admin, me)
-    except Exception:
-        pass
-    return is_admin
 
 
 def list_promotions():
@@ -1094,7 +1299,7 @@ def list_promotions():
     ]
 
 
-def create_promotion(payload, token=None):
+def create_promotion(payload, token=None, op_key=None):
     if not isinstance(payload, dict):
         raise ValueError("payload must be an object")
     query = """
@@ -1105,8 +1310,28 @@ def create_promotion(payload, token=None):
       }
     }
     """
-    variables = {"input": payload}
-    resp = _graphql_request(query, variables, token)
+    # Map incoming payload keys (snake_case) to upstream GraphQL input (camelCase)
+    def _to_camel(s: str) -> str:
+        parts = s.split('_')
+        return parts[0] + ''.join(p.title() for p in parts[1:]) if len(parts) > 1 else s
+
+    mapped = {}
+    # Explicit mappings for known fields
+    if 'name' in payload:
+        mapped['name'] = payload['name']
+    if 'discount_percent' in payload:
+        # upstream expects camelCase 'discountPercent'
+        mapped['discountPercent'] = payload['discount_percent']
+    if 'active' in payload:
+        mapped['active'] = payload['active']
+    # copy any other fields converting snake_case -> camelCase
+    for k, v in payload.items():
+        if k in ('name', 'discount_percent', 'active'):
+            continue
+        mapped[_to_camel(k)] = v
+
+    variables = {"input": mapped}
+    resp = _graphql_request(query, variables, token, op_key=op_key)
     if resp.get("errors"):
         raise UpstreamError("GraphQL upstream returned errors")
     result = (resp.get("data") or {}).get("createPromotion")
@@ -1147,10 +1372,62 @@ def update_promotion(promotion_id, payload, token=None):
 
 
 # Admin mutations and management helpers
-def create_product(payload, token=None):
+def create_product(payload, token=None, op_key=None):
     # Basic validation
     if not isinstance(payload, dict):
         raise ValueError("payload must be an object")
+    # Debug: persist incoming token/op_key for triage
+    try:
+        import json, datetime
+        dbg = {
+            'ts': datetime.datetime.utcnow().isoformat() + 'Z',
+            'note': 'create_product_incoming_debug',
+            'token_present': bool(token),
+            'token_masked': (token[:10] + '...') if token and isinstance(token, str) and len(token) > 13 else token,
+            'op_key_present': bool(op_key),
+            'op_key_masked': (op_key[:6] + '...' + op_key[-4:]) if op_key and isinstance(op_key, str) else op_key,
+            'payload_sample': {'name': payload.get('name')}
+        }
+        with open('/tmp/bff-graphql-outgoing.log', 'a', encoding='utf-8') as fh:
+            fh.write(json.dumps(dbg, ensure_ascii=False) + "\n")
+    except Exception:
+        pass
+    # Normalize payload to GraphQL contract: expect camelCase only.
+    # Map legacy/incorrect client fields to the canonical contract names.
+    if isinstance(payload, dict):
+        # priceAmount -> price (frontend sent priceAmount previously)
+        if "priceAmount" in payload and "price" not in payload:
+            try:
+                payload["price"] = payload.pop("priceAmount")
+            except Exception:
+                # fallback: ignore if conversion fails
+                pass
+        # Normalize common snake_case keys to camelCase per GraphQL contract
+        snake_to_camel = {
+            'bgg_id': 'bggId',
+            'image_file_name': 'imageFileName',
+            'image_url': 'imageUrl',
+            'release_year': 'releaseYear',
+            'min_players': 'minPlayers',
+            'max_players': 'maxPlayers',
+            'playing_time_minutes': 'playingTimeMinutes',
+            'min_age': 'minAge',
+            'max_age': 'maxAge',
+            'price_amount': 'price',
+        }
+        for k in list(payload.keys()):
+            if k in snake_to_camel:
+                camel = snake_to_camel[k]
+                # prefer existing camelCase value if present
+                if camel not in payload or payload.get(camel) in (None, ''):
+                    try:
+                        payload[camel] = payload.pop(k)
+                    except Exception:
+                        try:
+                            # best-effort: delete the snake_case key if it collides
+                            del payload[k]
+                        except Exception:
+                            pass
     name = payload.get("name")
     if not name:
         raise ValueError("name is required")
@@ -1163,7 +1440,7 @@ def create_product(payload, token=None):
     }
     """
     variables = {"input": payload}
-    payload_resp = _graphql_request(query, variables, token)
+    payload_resp = _graphql_request(query, variables, token, op_key=op_key)
     if payload_resp.get("errors"):
         raise UpstreamError("GraphQL upstream returned errors")
     result = (payload_resp.get("data") or {}).get("createProduct")
@@ -1174,12 +1451,97 @@ def create_product(payload, token=None):
         err = errors[0]
         raise UpstreamError(err.get("message", "Create product failed"), err.get("code"), err.get("field"), user_error=True)
     product = result.get("product")
+    # Persist a compact record of created product for immediate BFF-level
+    # lookup to tolerate upstream eventual-consistency in listing/indexing.
+    try:
+        import json, datetime
+        rec = {
+            'ts': datetime.datetime.utcnow().isoformat() + 'Z',
+            'bgg_id': product.get('bggId'),
+            'name': product.get('name'),
+        }
+        # Debug: record attempt and success markers to help triage missing file writes
+        try:
+            with open('/tmp/bff-created-products-debug.log', 'a', encoding='utf-8') as dbgfh:
+                dbgfh.write(json.dumps({"ts": datetime.datetime.utcnow().isoformat() + 'Z', "note": "create_product_write_attempt", "rec": rec}, ensure_ascii=False) + "\n")
+        except Exception:
+            pass
+        try:
+            with open('/tmp/bff-created-products.log', 'a', encoding='utf-8') as fh:
+                fh.write(json.dumps(rec, ensure_ascii=False) + "\n")
+        except Exception as e:
+            try:
+                with open('/tmp/bff-created-products-debug.log', 'a', encoding='utf-8') as dbgfh:
+                    dbgfh.write(json.dumps({"ts": datetime.datetime.utcnow().isoformat() + 'Z', "note": "create_product_write_failed", "error": str(e)}, ensure_ascii=False) + "\n")
+            except Exception:
+                pass
+        else:
+            try:
+                with open('/tmp/bff-created-products-debug.log', 'a', encoding='utf-8') as dbgfh:
+                    dbgfh.write(json.dumps({"ts": datetime.datetime.utcnow().isoformat() + 'Z', "note": "create_product_write_success", "bgg_id": product.get('bggId')}, ensure_ascii=False) + "\n")
+            except Exception:
+                pass
+    except Exception:
+        pass
     return {"bgg_id": product.get("bggId"), "name": product.get("name")}
 
 
-def update_product(product_id, payload, token=None):
+def update_product(product_id, payload, token=None, op_key=None):
     if not isinstance(payload, dict):
         raise ValueError("payload must be an object")
+    # Normalize payload to GraphQL contract: expect camelCase only.
+    # Map legacy/incorrect client fields to the canonical contract names.
+    try:
+        # priceAmount -> price (frontend historically sent priceAmount)
+        if "priceAmount" in payload and "price" not in payload:
+            try:
+                payload["price"] = payload.pop("priceAmount")
+            except Exception:
+                pass
+        # Normalize common snake_case keys to camelCase per GraphQL contract
+        snake_to_camel = {
+            'bgg_id': 'bggId',
+            'image_file_name': 'imageFileName',
+            'image_url': 'imageUrl',
+            'release_year': 'releaseYear',
+            'min_players': 'minPlayers',
+            'max_players': 'maxPlayers',
+            'playing_time_minutes': 'playingTimeMinutes',
+            'min_age': 'minAge',
+            'max_age': 'maxAge',
+            'price_amount': 'price',
+        }
+        for k in list(payload.keys()):
+            if k in snake_to_camel:
+                camel = snake_to_camel[k]
+                if camel not in payload or payload.get(camel) in (None, ''):
+                    try:
+                        payload[camel] = payload.pop(k)
+                    except Exception:
+                        try:
+                            del payload[k]
+                        except Exception:
+                            pass
+    except Exception:
+        # best-effort normalization; never fail the request due to normalization errors
+        pass
+
+    # Ensure we do not send identifier fields inside the `input` GraphQL object.
+    # The Core mutation expects the `id` argument separately, not `bggId` inside input.
+    try:
+        if 'bggId' in payload:
+            try:
+                payload.pop('bggId')
+            except Exception:
+                pass
+        if 'bgg_id' in payload:
+            try:
+                payload.pop('bgg_id')
+            except Exception:
+                pass
+    except Exception:
+        pass
+
     query = """
     mutation UpdateProduct($id: ID!, $input: UpdateProductInput!) {
       updateProduct(id: $id, input: $input) {
@@ -1189,7 +1551,7 @@ def update_product(product_id, payload, token=None):
     }
     """
     variables = {"id": product_id, "input": payload}
-    payload_resp = _graphql_request(query, variables, token)
+    payload_resp = _graphql_request(query, variables, token, op_key=op_key)
     if payload_resp.get("errors"):
         raise UpstreamError("GraphQL upstream returned errors")
     result = (payload_resp.get("data") or {}).get("updateProduct")

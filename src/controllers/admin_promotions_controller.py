@@ -25,6 +25,9 @@ def admin_create_promotion():
     try:
         dto = PromotionCreateDto.from_payload(payload)
         validated = dto.validate()
+        token = request.headers.get("Authorization")
+        if isinstance(validated, dict):
+            validated["_auth_token"] = token
         result = admin_create_promotion_service(validated)
         return jsonify(result), 201
     except ValueError as exc:
@@ -42,6 +45,9 @@ def admin_update_promotion(promotion_id):
     try:
         dto = PromotionUpdateDto.from_payload(payload)
         validated = dto.validate()
+        token = request.headers.get("Authorization")
+        if isinstance(validated, dict):
+            validated["_auth_token"] = token
         result = admin_update_promotion_service(promotion_id, validated)
         return jsonify(result), 200
     except ValueError as exc:

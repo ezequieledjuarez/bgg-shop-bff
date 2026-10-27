@@ -11,6 +11,7 @@ from .admin_products_controller import (
 	admin_create_product,
 	admin_update_product,
 	admin_adjust_variant_stock,
+	admin_get_product,
 )
 from .admin_promotions_controller import (
 	admin_list_promotions,
@@ -42,6 +43,7 @@ __all__ = [
 	"admin_create_product",
 	"admin_update_product",
 	"admin_adjust_variant_stock",
+	"admin_get_product",
 	"admin_list_promotions",
 	"admin_create_promotion",
 	"admin_update_promotion",

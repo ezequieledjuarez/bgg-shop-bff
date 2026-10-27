@@ -1,4 +1,5 @@
 import os
+import requests as _requests
 
 from flask import Flask, request
 from flask_cors import CORS
@@ -43,10 +44,11 @@ from src.services import (
     remove_from_wishlist,
 )
 from src.controllers import (
-    admin_list_products as admin_list_products_controller,
-    admin_create_product as admin_create_product_controller,
-    admin_update_product as admin_update_product_controller,
-    admin_adjust_variant_stock as admin_adjust_variant_stock_controller,
+    admin_list_products,
+    admin_get_product,
+    admin_create_product,
+    admin_update_product,
+    admin_adjust_variant_stock,
 )
 from src.controllers import (
     admin_list_promotions as admin_list_promotions_controller,
@@ -54,20 +56,152 @@ from src.controllers import (
     admin_update_promotion as admin_update_promotion_controller,
 )
 from src.controllers import admin_apply_coupon_preview as admin_apply_coupon_preview_controller
+from src import proxy as proxy_module
+from src import opkey_middleware
+from flask import jsonify
 
 app = Flask(__name__)
 allowed_origins = ("http://localhost:3000", "http://127.0.0.1:3000")
+def _dynamic_allow_headers(environ):
+    # Echo requested headers if present; fallback to common headers
+    acrh = environ.get('HTTP_ACCESS_CONTROL_REQUEST_HEADERS')
+    if acrh:
+        # Return as-is (Flask-CORS will normalize)
+        return acrh
+    return ['Content-Type', 'Authorization', 'authorization']
+
+
 CORS(
     app,
     resources={r"/api/*": {"origins": allowed_origins}},
     methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
-    allow_headers=["Content-Type", "Authorization"],
+    allow_headers="*",
+    expose_headers=["Location"],
     supports_credentials=True,
 )
+
+# Initialize OpKey middleware (validates X-Op-Key and caches results)
+opkey_middleware.init_app(app)
+
+# Diagnostic: persist incoming request headers with a stable correlation id
+from flask import g
+import json as _json, time as _time
+def _append_incoming_log(entry: dict):
+    try:
+        pid = str(os.getpid())
+        path = f"/tmp/bff-incoming-{pid}.log"
+        entry['pid'] = pid
+        with open(path, 'a', encoding='utf-8') as fh:
+            fh.write(_json.dumps(entry, ensure_ascii=False) + "\n")
+    except Exception:
+        pass
+
+
+@app.before_request
+def _log_incoming_request():
+    try:
+        cid = request.headers.get('X-Debug-Correlation') or request.headers.get('X-Request-ID') or request.headers.get('X-Correlation-ID')
+        if not cid:
+            cid = str(int(_time.time() * 1000))
+        g.correlation_id = cid
+        entry = {
+            'ts': _json.dumps(__import__('datetime').datetime.utcnow().isoformat()),
+            'note': 'incoming_request',
+            'method': request.method,
+            'path': request.path,
+            'full_url': request.url,
+            'remote_addr': request.remote_addr,
+            'headers': dict(request.headers),
+            'correlation_id': cid,
+        }
+        _append_incoming_log(entry)
+    except Exception:
+        pass
+
+
+
+# Ensure OPTIONS preflight requests to /api/v1/* always return appropriate CORS headers.
+# Some browsers may issue preflight requests which can return 404 if routes
+# are not yet fully registered or if Flask-CORS middleware does not catch them.
+@app.route('/api/v1', methods=['OPTIONS'])
+def preflight_api_root():
+    origin = request.headers.get('Origin')
+    ac_origin = origin if origin in allowed_origins else allowed_origins[0]
+    resp = app.make_response(('', 200))
+    resp.headers['Access-Control-Allow-Origin'] = ac_origin
+    resp.headers['Access-Control-Allow-Methods'] = 'GET,POST,PUT,PATCH,DELETE,OPTIONS'
+    # Allow requested headers dynamically to support debug headers used by tests
+    acrh = request.headers.get('Access-Control-Request-Headers')
+    resp.headers['Access-Control-Allow-Headers'] = acrh if acrh else 'Content-Type, Authorization'
+    resp.headers['Access-Control-Allow-Credentials'] = 'true'
+    # Expose Location header so clients can read it from responses
+    resp.headers['Access-Control-Expose-Headers'] = 'Location'
+    return resp
+
+
+@app.route('/api/v1/<path:dummy>', methods=['OPTIONS'])
+def preflight_api(dummy):
+    origin = request.headers.get('Origin')
+    ac_origin = origin if origin in allowed_origins else allowed_origins[0]
+    resp = app.make_response(('', 200))
+    resp.headers['Access-Control-Allow-Origin'] = ac_origin
+    resp.headers['Access-Control-Allow-Methods'] = 'GET,POST,PUT,PATCH,DELETE,OPTIONS'
+    acrh = request.headers.get('Access-Control-Request-Headers')
+    resp.headers['Access-Control-Allow-Headers'] = acrh if acrh else 'Content-Type, Authorization'
+    resp.headers['Access-Control-Allow-Credentials'] = 'true'
+    # Expose Location header so clients can read it from responses
+    resp.headers['Access-Control-Expose-Headers'] = 'Location'
+    return resp
 
 
 def _configured_bool(value):
     return str(value).strip().lower() in ("1", "true", "yes", "on")
+
+
+# Global handler: persist any UpstreamError that reaches Flask for offline triage
+@app.errorhandler(proxy_module.UpstreamError)
+def _handle_upstream_error(exc):
+    try:
+        import json, datetime
+        out = {
+            "ts": datetime.datetime.utcnow().isoformat() + "Z",
+            "note": "flask_upstream_error_handler",
+            "path": getattr(request, 'path', None),
+            "method": getattr(request, 'method', None),
+            "error": str(exc),
+        }
+        try:
+            with open('/tmp/bff-graphql-error.log', 'a', encoding='utf-8') as fh:
+                fh.write(json.dumps(out, ensure_ascii=False) + "\n")
+        except Exception:
+            pass
+    except Exception:
+        pass
+    return jsonify({"error": "upstream GraphQL request failed"}), 502
+
+
+# Catch-all: persist unexpected exceptions with traceback for offline triage
+@app.errorhandler(Exception)
+def _handle_unexpected_exception(exc):
+    try:
+        import json, datetime, traceback
+        out = {
+            "ts": datetime.datetime.utcnow().isoformat() + "Z",
+            "note": "flask_unhandled_exception",
+            "path": getattr(request, 'path', None),
+            "method": getattr(request, 'method', None),
+            "error": str(exc),
+            "traceback": traceback.format_exc(),
+        }
+        try:
+            with open('/tmp/bff-graphql-error.log', 'a', encoding='utf-8') as fh:
+                fh.write(json.dumps(out, ensure_ascii=False) + "\n")
+        except Exception:
+            pass
+    except Exception:
+        pass
+    # Re-raise to let Flask/Werkzeug handle the response code as before
+    raise
 
 
 app.config["CART_COOKIE_NAME"] = os.getenv("CART_COOKIE_NAME", "cart_id")
@@ -86,6 +220,48 @@ app.config["CART_COOKIE_SECURE"] = (
 @app.route("/health", methods=["GET"])
 def health():
     return health_controller()
+
+
+# Debug endpoint: receive headers payloads from frontend for triage
+@app.route("/api/v1/_debug/headers", methods=["POST"])
+def debug_headers():
+    try:
+        payload = request.get_json(silent=True)
+    except Exception:
+        payload = None
+    try:
+        print("[debug-headers] payload=", payload)
+        print("[debug-headers] incoming request.headers=", dict(request.headers))
+        # persist debug payloads to file for offline correlation
+        try:
+            import json
+            out_path = '/tmp/bff-debug-headers.log'
+            entry = {
+                'ts': __import__('datetime').datetime.utcnow().isoformat() + 'Z',
+                'path': request.path,
+                'method': request.method,
+                'payload': payload,
+                'request_headers': dict(request.headers),
+            }
+            try:
+                with open(out_path, 'a', encoding='utf-8') as fh:
+                    fh.write(json.dumps(entry, ensure_ascii=False) + "\n")
+            except Exception as e:
+                # Log failure and attempt fallback to repository test-results
+                print(f"[debug-headers] write failed to {out_path}: {e}")
+                try:
+                    fallback = '/home/eze/develop/boardgame-app/test-results/bff-debug-headers.log'
+                    os.makedirs(os.path.dirname(fallback), exist_ok=True)
+                    with open(fallback, 'a', encoding='utf-8') as fh:
+                        fh.write(json.dumps(entry, ensure_ascii=False) + "\n")
+                    print(f"[debug-headers] wrote fallback log to {fallback}")
+                except Exception as e2:
+                    print(f"[debug-headers] fallback write failed: {e2}")
+        except Exception:
+            pass
+    except Exception:
+        pass
+    return ('', 204)
 
 
 @app.route("/api/v1/products", methods=["GET"])
@@ -191,45 +367,90 @@ def login():
     return response, status
 
 
+@app.route("/api/v1/auth/refresh", methods=["POST"])
+def refresh():
+    """Proxy endpoint: read refresh token from HttpOnly cookie, call core refresh, rotate cookie.
+
+    Returns JSON { access_token } on success and sets HttpOnly `refresh_token` cookie.
+    """
+    core_base = os.getenv("SALEOR_BASE_URL", "http://localhost:8000")
+    refresh_cookie = request.cookies.get('refresh_token')
+    # optionally allow client to provide refresh_token in body (for tests)
+    body = request.get_json(silent=True) or {}
+    refresh_token = body.get('refresh_token') or refresh_cookie
+    if not refresh_token:
+        # no refresh available
+        resp = app.make_response(({"detail": "no refresh token"}, 401))
+        resp.delete_cookie('refresh_token', path='/', secure=app.config.get('CART_COOKIE_SECURE', True), httponly=True, samesite='Strict')
+        return resp
+    try:
+        core_url = f"{core_base}/api/v1/auth/refresh"
+        r = _requests.post(core_url, json={"refresh_token": refresh_token}, timeout=5)
+        if r.status_code != 200:
+            resp = app.make_response(({"detail": "refresh failed"}, 401))
+            resp.delete_cookie('refresh_token', path='/', secure=app.config.get('CART_COOKIE_SECURE', True), httponly=True, samesite='Strict')
+            return resp
+        payload = r.json()
+        access = payload.get('access_token')
+        new_refresh = payload.get('refresh_token')
+        if not access:
+            resp = app.make_response(({"detail": "invalid upstream response"}, 502))
+            return resp
+        resp = app.make_response(({"access_token": access}, 200))
+        if new_refresh:
+            resp.set_cookie('refresh_token', new_refresh, path='/', secure=app.config.get('CART_COOKIE_SECURE', True), httponly=True, samesite='Strict')
+        return resp
+    except Exception as exc:
+        print(f"[refresh-proxy] error calling core: {exc}")
+        resp = app.make_response(({"detail": "refresh upstream error"}, 502))
+        resp.delete_cookie('refresh_token', path='/', secure=app.config.get('CART_COOKIE_SECURE', True), httponly=True, samesite='Strict')
+        return resp
+
+
 # Admin management endpoints (minimal scaffolding)
-@app.route("/admin/products", methods=["GET"])
+@app.route("/api/v1/admin/products", methods=["GET"])
 def admin_products_list():
-    return admin_list_products_controller()
+    return admin_list_products()
 
 
-@app.route("/admin/products", methods=["POST"])
+@app.route("/api/v1/admin/products", methods=["POST"])
 def admin_products_create():
-    return admin_create_product_controller()
+    return admin_create_product()
 
 
-@app.route("/admin/products/<product_id>", methods=["PUT"])
+@app.route("/api/v1/admin/products/<product_id>", methods=["PUT"])
 def admin_products_update(product_id):
-    return admin_update_product_controller(product_id)
+    return admin_update_product(product_id)
 
 
-@app.route("/admin/products/<product_id>/variants/<variant_id>/adjust-stock", methods=["POST"])
+@app.route("/api/v1/admin/products/<product_id>", methods=["GET"])
+def admin_products_get(product_id):
+    return admin_get_product(product_id)
+
+
+@app.route("/api/v1/admin/products/<product_id>/variants/<variant_id>/adjust-stock", methods=["POST"])
 def admin_products_adjust_stock(product_id, variant_id):
-    return admin_adjust_variant_stock_controller(product_id, variant_id)
+    return admin_adjust_variant_stock(product_id, variant_id)
 
 
 # Admin promotions
-@app.route("/admin/promotions", methods=["GET"])
+@app.route("/api/v1/admin/promotions", methods=["GET"])
 def admin_promotions_list():
     return admin_list_promotions_controller()
 
 
-@app.route("/admin/promotions", methods=["POST"])
+@app.route("/api/v1/admin/promotions", methods=["POST"])
 def admin_promotions_create():
     return admin_create_promotion_controller()
 
 
-@app.route("/admin/promotions/<promotion_id>", methods=["PUT"])
+@app.route("/api/v1/admin/promotions/<promotion_id>", methods=["PUT"])
 def admin_promotions_update(promotion_id):
     return admin_update_promotion_controller(promotion_id)
 
 
 # Admin coupons
-@app.route("/admin/coupons/<code>/apply", methods=["POST"])
+@app.route("/api/v1/admin/coupons/<code>/apply", methods=["POST"])
 def admin_coupons_apply(code):
     return admin_apply_coupon_preview_controller(code)
 
