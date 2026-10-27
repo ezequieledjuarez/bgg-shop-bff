@@ -71,3 +71,12 @@ logs/
 
 # Ignore Windows Zone.Identifier alternate data stream artifacts
 *.Identifier
+
+# Test diagnostics/artifacts
+**/diagnostics/
+**/diagnostics/*.json
+**/diagnostics/*.txt
+tests/**/diagnostics/
+tests/**/*.json
+tests/**/*.txt
+tests/e2e/storageState.json
