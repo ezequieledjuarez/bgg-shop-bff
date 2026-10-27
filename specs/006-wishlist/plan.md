@@ -90,3 +90,27 @@ This plan is retrospective. It does not claim these implementation checks were r
 ## Complexity Tracking
 
 No constitution violations or additional architectural components are recorded for this BFF feature.
+
+## Delegación a agentes
+
+Objetivo: delegar la implementación de endpoints, orquestación GraphQL y pruebas de contrato a un agente automatizado que devuelva parches y pruebas locales sin hacer commits ni pushes.
+
+- Allowed edit surfaces (ejemplos):
+	- bgg-shop-bff/src/controllers/wishlist_controller.py
+	- bgg-shop-bff/src/services.py
+	- bgg-shop-bff/src/dtos/wishlist.py
+	- specs/006-wishlist/*
+
+- Qué entregar (por agente):
+	- Parche/diff aplicable con los controladores y servicios implementados.
+	- Tests de contrato y unitarios y su salida (logs) tras ejecutarlos.
+	- Mensaje de commit propuesto (Conventional Commits).
+	- Bloque "## Key Learnings:" con 1–5 puntos.
+
+- Comandos de verificación recomendados:
+	- `pip install -r requirements.txt`
+	- `pytest tests/test_wishlist.py -q`
+
+- Restricción importante: NO hacer commit ni push automático. Entregar `git diff` o parches en formato aplicable.
+
+Colocar estas instrucciones en `plan.md` sitúa la delegación junto a la planificación técnica y las rutas de código objetivo, facilitando al agente las superficies de edición autorizadas.
