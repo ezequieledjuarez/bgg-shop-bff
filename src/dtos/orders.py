@@ -4,7 +4,7 @@ import re
 import uuid
 
 
-_ADDRESS_FIELDS = {"recipient", "street", "city", "postal_code", "phone"}
+_ADDRESS_LIMITS = {"recipient": 250, "street": 500, "city": 150, "postal_code": 32, "phone": 50}
 _PAYMENT_ID = re.compile(r"[A-Za-z0-9._-]{1,128}\Z")
 
 
@@ -32,17 +32,18 @@ class CheckoutRequestDto:
         if shipping_mode not in ("standard", "pickup"):
             raise ValueError("shipping_mode must be standard or pickup")
         address = payload.get("address")
+        if "address" in payload and address is None:
+            raise ValueError("address must be an object with supported fields")
         if address is not None:
-            if not isinstance(address, dict) or not address.keys() <= _ADDRESS_FIELDS:
+            if not isinstance(address, dict) or not address.keys() <= _ADDRESS_LIMITS.keys():
                 raise ValueError("address must be an object with supported fields")
             address = dict(address)
             for name, value in address.items():
-                if value is not None and not isinstance(value, str):
+                if not isinstance(value, str):
                     raise ValueError(f"address.{name} must be a string")
-                if isinstance(value, str):
-                    address[name] = value.strip()
-                    if len(address[name]) > 255:
-                        raise ValueError(f"address.{name} must not exceed 255 characters")
+                if len(value) > _ADDRESS_LIMITS[name]:
+                    raise ValueError(f"address.{name} must not exceed {_ADDRESS_LIMITS[name]} characters")
+                address[name] = value.strip()
         return cls(shipping_mode=shipping_mode, address=address)
 
     def to_core(self) -> tuple[str, dict[str, str | None] | None]:

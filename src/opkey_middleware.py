@@ -20,63 +20,17 @@ def validate_op_key_with_core(raw_key, path, method):
     url = f"{core_base}/internal/op-validate"
     internal_secret = os.getenv("OPKEY_INTERNAL_SECRET", "changeme-internal-secret")
     try:
-        # Diagnostic: log outgoing validate call
-        try:
-            _log_entry = {
-                "ts": int(time.time()),
-                "event": "validate_call_out",
-                "url": url,
-                "path": path,
-                "method": method,
-                "masked_key": (raw_key[:6] + "..." + raw_key[-4:]) if raw_key else None,
-            }
-            _write_log(_log_entry)
-        except Exception:
-            pass
-
         r = requests.post(
             url,
             json={"op_key": raw_key, "path": path, "method": method},
             headers={"X-Internal-Secret": internal_secret},
             timeout=3,
         )
-        # Diagnostic: log response
-        try:
-            _write_log({
-                "ts": int(time.time()),
-                "event": "validate_call_in",
-                "status_code": r.status_code,
-                "response_snippet": (r.text[:200] if r.text else None),
-            })
-        except Exception:
-            pass
         if r.status_code != 200:
             return None
         return r.json()
     except Exception:
         return None
-
-
-def _write_log(entry: dict):
-    # Best-effort: append to /tmp and repository test-results for host visibility
-    try:
-        import json
-        s = json.dumps(entry, ensure_ascii=False)
-        try:
-            with open('/tmp/bff-opkey.log', 'a', encoding='utf-8') as fh:
-                fh.write(s + "\n")
-        except Exception:
-            pass
-        try:
-            host_path = os.path.join(os.path.dirname(__file__), '..', '..', 'test-results', 'bff-opkey.log')
-            host_path = os.path.normpath(host_path)
-            os.makedirs(os.path.dirname(host_path), exist_ok=True)
-            with open(host_path, 'a', encoding='utf-8') as fh:
-                fh.write(s + "\n")
-        except Exception:
-            pass
-    except Exception:
-        pass
 
 
 def init_app(app):

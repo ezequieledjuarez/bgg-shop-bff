@@ -1,8 +1,10 @@
 import os
+import uuid
 import requests as _requests
 
 from flask import Flask, request
 from flask_cors import CORS
+from werkzeug.exceptions import HTTPException
 from src.controllers import (
     add_cart_item as add_cart_item_controller,
     auth_request,
@@ -56,6 +58,8 @@ from src.controllers import (
     admin_update_promotion as admin_update_promotion_controller,
 )
 from src.controllers import admin_apply_coupon_preview as admin_apply_coupon_preview_controller
+from src.controllers.admin_gift_cards_controller import create_gift_card as admin_create_gift_card_controller
+from src.controllers.credit_controller import get_credit, redeem_gift_card, checkout_credit
 from src import proxy as proxy_module
 from src import opkey_middleware
 from flask import jsonify
@@ -80,12 +84,26 @@ CORS(
     supports_credentials=True,
 )
 
+_CREDIT_PATHS = {
+    "/api/v1/credit",
+    "/api/v1/gift-cards/redeem",
+    "/api/v1/checkout/credit",
+}
+
 # Initialize OpKey middleware (validates X-Op-Key and caches results)
 opkey_middleware.init_app(app)
+_opkey_before_request = app.before_request_funcs[None][-1]
 
-# Diagnostic: persist incoming request headers with a stable correlation id
+
+def _opkey_except_credit():
+    if request.path not in _CREDIT_PATHS:
+        return _opkey_before_request()
+
+
+app.before_request_funcs[None][-1] = _opkey_except_credit
+
 from flask import g
-import json as _json, time as _time
+import json as _json
 def _append_incoming_log(entry: dict):
     try:
         pid = str(os.getpid())
@@ -99,19 +117,15 @@ def _append_incoming_log(entry: dict):
 
 @app.before_request
 def _log_incoming_request():
+    if request.path == "/api/v1/admin/gift-cards" or request.path in _CREDIT_PATHS:
+        return
     try:
-        cid = request.headers.get('X-Debug-Correlation') or request.headers.get('X-Request-ID') or request.headers.get('X-Correlation-ID')
-        if not cid:
-            cid = str(int(_time.time() * 1000))
+        cid = str(uuid.uuid4())
         g.correlation_id = cid
         entry = {
             'ts': _json.dumps(__import__('datetime').datetime.utcnow().isoformat()),
             'note': 'incoming_request',
-            'method': request.method,
-            'path': request.path,
-            'full_url': request.url,
-            'remote_addr': request.remote_addr,
-            'headers': dict(request.headers),
+            'path': request.url_rule.rule if request.url_rule else '<unmatched>',
             'correlation_id': cid,
         }
         _append_incoming_log(entry)
@@ -158,50 +172,18 @@ def _configured_bool(value):
     return str(value).strip().lower() in ("1", "true", "yes", "on")
 
 
-# Global handler: persist any UpstreamError that reaches Flask for offline triage
 @app.errorhandler(proxy_module.UpstreamError)
 def _handle_upstream_error(exc):
-    try:
-        import json, datetime
-        out = {
-            "ts": datetime.datetime.utcnow().isoformat() + "Z",
-            "note": "flask_upstream_error_handler",
-            "path": getattr(request, 'path', None),
-            "method": getattr(request, 'method', None),
-            "error": str(exc),
-        }
-        try:
-            with open('/tmp/bff-graphql-error.log', 'a', encoding='utf-8') as fh:
-                fh.write(json.dumps(out, ensure_ascii=False) + "\n")
-        except Exception:
-            pass
-    except Exception:
-        pass
+    app.logger.error("Upstream request failed.")
     return jsonify({"error": "upstream GraphQL request failed"}), 502
 
 
-# Catch-all: persist unexpected exceptions with traceback for offline triage
 @app.errorhandler(Exception)
 def _handle_unexpected_exception(exc):
-    try:
-        import json, datetime, traceback
-        out = {
-            "ts": datetime.datetime.utcnow().isoformat() + "Z",
-            "note": "flask_unhandled_exception",
-            "path": getattr(request, 'path', None),
-            "method": getattr(request, 'method', None),
-            "error": str(exc),
-            "traceback": traceback.format_exc(),
-        }
-        try:
-            with open('/tmp/bff-graphql-error.log', 'a', encoding='utf-8') as fh:
-                fh.write(json.dumps(out, ensure_ascii=False) + "\n")
-        except Exception:
-            pass
-    except Exception:
-        pass
-    # Re-raise to let Flask/Werkzeug handle the response code as before
-    raise
+    if isinstance(exc, HTTPException):
+        return exc
+    app.logger.error("Unexpected request error.")
+    return jsonify({"error": "internal server error"}), 500
 
 
 app.config["CART_COOKIE_NAME"] = os.getenv("CART_COOKIE_NAME", "cart_id")
@@ -222,45 +204,8 @@ def health():
     return health_controller()
 
 
-# Debug endpoint: receive headers payloads from frontend for triage
 @app.route("/api/v1/_debug/headers", methods=["POST"])
 def debug_headers():
-    try:
-        payload = request.get_json(silent=True)
-    except Exception:
-        payload = None
-    try:
-        print("[debug-headers] payload=", payload)
-        print("[debug-headers] incoming request.headers=", dict(request.headers))
-        # persist debug payloads to file for offline correlation
-        try:
-            import json
-            out_path = '/tmp/bff-debug-headers.log'
-            entry = {
-                'ts': __import__('datetime').datetime.utcnow().isoformat() + 'Z',
-                'path': request.path,
-                'method': request.method,
-                'payload': payload,
-                'request_headers': dict(request.headers),
-            }
-            try:
-                with open(out_path, 'a', encoding='utf-8') as fh:
-                    fh.write(json.dumps(entry, ensure_ascii=False) + "\n")
-            except Exception as e:
-                # Log failure and attempt fallback to repository test-results
-                print(f"[debug-headers] write failed to {out_path}: {e}")
-                try:
-                    fallback = '/home/eze/develop/boardgame-app/test-results/bff-debug-headers.log'
-                    os.makedirs(os.path.dirname(fallback), exist_ok=True)
-                    with open(fallback, 'a', encoding='utf-8') as fh:
-                        fh.write(json.dumps(entry, ensure_ascii=False) + "\n")
-                    print(f"[debug-headers] wrote fallback log to {fallback}")
-                except Exception as e2:
-                    print(f"[debug-headers] fallback write failed: {e2}")
-        except Exception:
-            pass
-    except Exception:
-        pass
     return ('', 204)
 
 
@@ -317,6 +262,21 @@ def wishlist_remove_item(bgg_id):
 @app.route("/api/v1/checkout", methods=["POST"])
 def purchase_checkout():
     return checkout_controller(checkout)
+
+
+@app.route("/api/v1/credit", methods=["GET"])
+def credit_balance():
+    return get_credit()
+
+
+@app.route("/api/v1/gift-cards/redeem", methods=["POST"])
+def gift_card_redeem():
+    return redeem_gift_card()
+
+
+@app.route("/api/v1/checkout/credit", methods=["POST"])
+def purchase_checkout_credit():
+    return checkout_credit()
 
 
 @app.route("/api/v1/checkout/confirm", methods=["POST"])
@@ -400,14 +360,19 @@ def refresh():
         if new_refresh:
             resp.set_cookie('refresh_token', new_refresh, path='/', secure=app.config.get('CART_COOKIE_SECURE', True), httponly=True, samesite='Strict')
         return resp
-    except Exception as exc:
-        print(f"[refresh-proxy] error calling core: {exc}")
+    except Exception:
+        app.logger.error("Refresh upstream request failed.")
         resp = app.make_response(({"detail": "refresh upstream error"}, 502))
         resp.delete_cookie('refresh_token', path='/', secure=app.config.get('CART_COOKIE_SECURE', True), httponly=True, samesite='Strict')
         return resp
 
 
 # Admin management endpoints (minimal scaffolding)
+@app.route("/api/v1/admin/gift-cards", methods=["POST"])
+def admin_gift_cards_create():
+    return admin_create_gift_card_controller()
+
+
 @app.route("/api/v1/admin/products", methods=["GET"])
 def admin_products_list():
     return admin_list_products()

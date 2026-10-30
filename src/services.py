@@ -132,13 +132,6 @@ def admin_create_product(payload):
                     token = fh.read().strip()
             except Exception:
                 token = None
-    # Debug: persist token representation and lengths to help diagnose truncation
-    try:
-        import json, datetime
-        with open('/tmp/bff-created-products-debug.log', 'a', encoding='utf-8') as dbgfh:
-            dbgfh.write(json.dumps({"ts": datetime.datetime.utcnow().isoformat() + 'Z', "note": "admin_create_product_token_debug", "token_repr": repr(token), "token_len": len(token) if token else 0, "op_key_present": bool(op_key)}, ensure_ascii=False) + "\n")
-    except Exception:
-        pass
     # remove internal helper keys if present
     if isinstance(payload, dict):
         payload = {k: v for k, v in payload.items() if k not in ("_auth_token", "_op_key")}
