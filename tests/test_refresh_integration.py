@@ -3,6 +3,39 @@ from unittest.mock import MagicMock, patch
 from app import app
 
 
+def test_refresh_http_route_uses_body_token_and_rotates_cookie():
+    client = app.test_client()
+    client.set_cookie('refresh_token', 'cookie-token')
+    upstream = MagicMock(status_code=200)
+    upstream.json.return_value = {'access_token': 'synthetic-access', 'refresh_token': 'rotated-refresh'}
+    with patch('app._requests.post', return_value=upstream) as post:
+        response = client.post('/api/v1/auth/refresh', json={'refresh_token': 'body-token'})
+    assert response.status_code == 200
+    assert response.get_json() == {'access_token': 'synthetic-access'}
+    assert 'refresh_token=rotated-refresh' in response.headers['Set-Cookie']
+    assert post.call_args.kwargs['json'] == {'refresh_token': 'body-token'}
+
+
+def test_refresh_http_route_rejects_missing_token_without_core():
+    with patch('app._requests.post') as post:
+        response = app.test_client().post('/api/v1/auth/refresh')
+    assert response.status_code == 401
+    assert response.get_json() == {'detail': 'no refresh token'}
+    post.assert_not_called()
+
+
+def test_refresh_transport_failure_does_not_log_private_details(capsys, caplog):
+    secret = 'synthetic-private-refresh-error'
+    with patch('app._requests.post', side_effect=RuntimeError(secret)), \
+            patch('app._append_incoming_log'), patch('app._opkey_before_request', return_value=None):
+        response = app.test_client().post('/api/v1/auth/refresh', json={'refresh_token': 'synthetic-refresh-token'})
+    captured = capsys.readouterr()
+    assert response.status_code == 502
+    assert response.get_json() == {'detail': 'refresh upstream error'}
+    assert 'refresh_token=' in response.headers['Set-Cookie']
+    assert secret not in captured.out + captured.err + caplog.text + response.get_data(as_text=True)
+
+
 def test_refresh_proxy_uses_cookie_and_rotates():
     client = app.test_client()
     # set cookie via keyword args to be compatible with different test client implementations

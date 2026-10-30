@@ -1,9 +1,11 @@
 from unittest.mock import MagicMock, patch
+import traceback
 
 import pytest
+import requests
 
 from app import app
-from src.proxy import UpstreamError, checkout, get_invoice, get_order, get_orders, retry_payment
+from src.proxy import UpstreamError, _graphql_request, checkout, get_invoice, get_order, get_orders, list_products, retry_payment
 
 
 ORDER_ID = "11111111-2222-4333-8444-555555555555"
@@ -31,6 +33,67 @@ ORDER = {
     }],
     "invoice": None,
 }
+
+
+@pytest.mark.parametrize("failure", [False, True])
+def test_graphql_proxy_never_logs_headers_variables_or_upstream_details(failure, capsys, caplog):
+    token = "Bearer synthetic-buyer-secret"
+    op_key = "synthetic-op-key"
+    private_value = "synthetic-private-value"
+    response = MagicMock()
+    response.json.return_value = {"data": {"result": private_value}, "errors": [{"message": private_value}]}
+    caplog.set_level("INFO")
+    with app.test_request_context("/api/v1/checkout", headers={"X-Op-Key": op_key}), \
+            patch("builtins.open", create=True) as file_open, \
+            patch("requests.post", side_effect=requests.Timeout(private_value) if failure else None, return_value=response) as post:
+        if failure:
+            with pytest.raises(UpstreamError) as raised:
+                _graphql_request("query Example { result }", {"address": private_value}, token)
+            assert private_value not in str(raised.value)
+            assert private_value not in "".join(traceback.format_exception(raised.value))
+        else:
+            _graphql_request("query Example { result }", {"address": private_value}, token)
+        assert post.call_args.kwargs["headers"]["Authorization"] == token
+        assert post.call_args.kwargs["headers"]["X-Op-Key"] == op_key
+    captured = capsys.readouterr()
+    logs = captured.out + captured.err + caplog.text + str(file_open.mock_calls)
+    for secret in (token, op_key, private_value):
+        assert secret not in logs
+
+
+@pytest.mark.parametrize("failure", ["none", "timeout", "graphql"])
+def test_product_proxy_does_not_log_credentials_or_request_details(failure, capsys, caplog):
+    token = "Bearer synthetic-private-token"
+    search = "synthetic-private-search"
+    response = MagicMock()
+    response.json.return_value = (
+        {"errors": [{"message": search}]} if failure == "graphql" else
+        {"data": {"products": {"items": [], "page": 1, "pageSize": 50, "total": 0, "totalPages": 0}}}
+    )
+    caplog.set_level("INFO")
+    with patch("builtins.open", create=True) as file_open, \
+            patch("requests.post", side_effect=requests.Timeout(search) if failure == "timeout" else None, return_value=response) as post:
+        if failure == "none":
+            assert list_products(search=search, token=token)["items"] == []
+        else:
+            with pytest.raises(UpstreamError) as raised:
+                list_products(search=search, token=token)
+            assert search not in "".join(traceback.format_exception(raised.value))
+        assert post.call_args.kwargs["headers"]["Authorization"] == token
+    captured = capsys.readouterr()
+    logs = captured.out + captured.err + caplog.text + str(file_open.mock_calls)
+    assert token not in logs and search not in logs
+
+
+def test_invoice_timeout_does_not_expose_upstream_details(capsys, caplog):
+    secret = "synthetic-private-invoice-error"
+    with patch("src.proxy._graphql_request", return_value={"data": {"myOrders": []}}), \
+            patch("requests.get", side_effect=requests.Timeout(secret)), patch("builtins.open", create=True) as file_open:
+        with pytest.raises(UpstreamError) as raised:
+            get_invoice(ORDER_ID, "Bearer synthetic-token")
+    assert secret not in "".join(traceback.format_exception(raised.value))
+    captured = capsys.readouterr()
+    assert secret not in captured.out + captured.err + caplog.text + str(file_open.mock_calls)
 
 
 def test_all_order_routes_require_authorization():
@@ -78,6 +141,35 @@ def test_checkout_validates_shipping_address_and_rejects_user_ids():
     ).status_code == 400
 
 
+@pytest.mark.parametrize("field,limit", [("recipient", 250), ("street", 500), ("city", 150), ("postal_code", 32), ("phone", 50)])
+def test_checkout_address_field_boundaries(field, limit):
+    client = app.test_client()
+    headers = {"Authorization": "Bearer buyer-token"}
+    with patch("app.checkout", return_value={"order": ORDER, "init_point": "https://pay.example/1"}) as service:
+        valid = client.post("/api/v1/checkout", json={"shipping_mode": "pickup", "address": {field: "x" * limit}}, headers=headers)
+    assert valid.status_code == 200
+    service.assert_called_once()
+    with patch("app.checkout", return_value={"order": ORDER, "init_point": "https://pay.example/1"}) as service:
+        invalid = client.post("/api/v1/checkout", json={"shipping_mode": "pickup", "address": {field: "x" * (limit + 1)}}, headers=headers)
+    assert invalid.status_code == 400
+    service.assert_not_called()
+
+
+@pytest.mark.parametrize("address", [None, {"phone": None}])
+def test_checkout_rejects_explicit_null_address_values(address):
+    with patch("app.checkout", return_value={"order": ORDER, "init_point": "https://pay.example/1"}) as service:
+        result = app.test_client().post("/api/v1/checkout", json={"shipping_mode": "pickup", "address": address}, headers={"Authorization": "Bearer buyer-token"})
+    assert result.status_code == 400
+    service.assert_not_called()
+
+
+def test_checkout_rejects_address_over_limit_before_trimming():
+    with patch("app.checkout", return_value={"order": ORDER, "init_point": "https://pay.example/1"}) as service:
+        result = app.test_client().post("/api/v1/checkout", json={"shipping_mode": "pickup", "address": {"recipient": " " + "x" * 250}}, headers={"Authorization": "Bearer buyer-token"})
+    assert result.status_code == 400
+    service.assert_not_called()
+
+
 def test_checkout_forwards_validated_input_and_returns_order_and_init_point():
     address = {
         "recipient": "Buyer", "street": "1 Main St", "city": "Buenos Aires",
@@ -103,6 +195,26 @@ def test_retry_payment_validates_uuid_and_forwards_bearer_token():
     assert response.status_code == 200
     assert response.get_json()["init_point"] == "https://pay.example/2"
     service.assert_called_once_with(ORDER_ID, "Bearer buyer-token")
+
+
+def test_retry_payment_pending_reconciliation_returns_conflict():
+    error = UpstreamError("A payment attempt requires reconciliation.", "PENDING_PAYMENT", user_error=True)
+    with patch("app.retry_payment", side_effect=error):
+        response = app.test_client().post(
+            f"/api/v1/orders/{ORDER_ID}/retry-payment", headers={"Authorization": "Bearer buyer-token"}
+        )
+    assert response.status_code == 409
+    assert response.get_json()["errors"][0]["code"] == "PENDING_PAYMENT"
+
+
+def test_retry_payment_review_returns_conflict():
+    error = UpstreamError("Payment requires manual review.", "PAYMENT_REQUIRES_REVIEW", user_error=True)
+    with patch("app.retry_payment", side_effect=error):
+        response = app.test_client().post(
+            f"/api/v1/orders/{ORDER_ID}/retry-payment", headers={"Authorization": "Bearer buyer-token"}
+        )
+    assert response.status_code == 409
+    assert response.get_json()["errors"][0]["code"] == "PAYMENT_REQUIRES_REVIEW"
 
 
 @pytest.mark.parametrize("payment_id", [None, "", " ", "a" * 129, "id/../../x", True, 1.2])
@@ -131,6 +243,17 @@ def test_confirm_validates_order_uuid_and_accepts_numeric_payment_id():
     service.assert_called_once_with(ORDER_ID, "123456", "Bearer buyer-token")
 
 
+def test_confirm_late_payment_returns_manual_review_conflict():
+    error = UpstreamError("Payment requires manual review.", "PAYMENT_REQUIRES_REVIEW", user_error=True)
+    with patch("app.confirm_payment", side_effect=error):
+        response = app.test_client().post(
+            "/api/v1/checkout/confirm", json={"order_id": ORDER_ID, "payment_id": "123456"},
+            headers={"Authorization": "Bearer buyer-token"},
+        )
+    assert response.status_code == 409
+    assert response.get_json()["errors"][0]["code"] == "PAYMENT_REQUIRES_REVIEW"
+
+
 def test_list_and_detail_orders_forward_auth_and_validate_path_uuid():
     client = app.test_client()
     with patch("app.get_orders", return_value=[ORDER]) as list_service:
@@ -146,9 +269,20 @@ def test_list_and_detail_orders_forward_auth_and_validate_path_uuid():
     detail_service.assert_called_once_with(ORDER_ID, "Bearer buyer-token")
 
     with patch("app.get_order") as service:
-        invalid = client.get("/api/v1/orders/../../etc/passwd", headers={"Authorization": "Bearer buyer-token"})
-    assert invalid.status_code == 404 or invalid.status_code == 400
+        invalid = client.get("/api/v1/orders/not-a-uuid", headers={"Authorization": "Bearer buyer-token"})
+    assert invalid.status_code == 400
     service.assert_not_called()
+
+
+def test_routing_http_errors_are_returned_without_calling_order_services():
+    with patch("app.get_order") as detail, patch("app.get_invoice") as invoice:
+        client = app.test_client()
+        malformed = client.get("/api/v1/orders/../../etc/passwd", headers={"Authorization": "Bearer buyer-token"})
+        missing = client.get("/nonexistent-route")
+    assert malformed.status_code == 405
+    assert missing.status_code == 404
+    detail.assert_not_called()
+    invoice.assert_not_called()
 
 
 @pytest.mark.parametrize(
@@ -196,8 +330,10 @@ def test_invoice_forwards_pdf_bytes_and_attachment_headers():
 def test_invoice_invalid_uuid_does_not_call_core_and_preserves_core_404():
     client = app.test_client()
     with patch("app.get_invoice") as service:
-        invalid = client.get("/api/v1/orders/%2e%2e%2fsecret/invoice", headers={"Authorization": "Bearer buyer-token"})
-    assert invalid.status_code in (400, 404)
+        invalid = client.get("/api/v1/orders/not-a-uuid/invoice", headers={"Authorization": "Bearer buyer-token"})
+        traversal = client.get("/api/v1/orders/%2e%2e%2fsecret/invoice", headers={"Authorization": "Bearer buyer-token"})
+    assert invalid.status_code == 400
+    assert traversal.status_code == 405
     service.assert_not_called()
 
     upstream = MagicMock(status_code=404)
@@ -275,7 +411,7 @@ def test_core_invoice_proxy_authenticates_then_forwards_validated_id_and_token()
     assert post.call_args.kwargs["headers"] == {"Authorization": "Bearer buyer-token"}
     assert "myOrders { id }" in post.call_args.kwargs["json"]["query"]
     get.assert_called_once_with(
-        f"http://localhost:8000/invoices/{ORDER_ID}",
+        f"http://localhost:8000/invoices/{ORDER_ID}/",
         headers={"Authorization": "Bearer buyer-token"},
         timeout=30,
         stream=True,

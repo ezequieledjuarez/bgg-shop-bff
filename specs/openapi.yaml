@@ -100,6 +100,54 @@ paths:
       - {}
       - BearerAuth: []
       - XOpKey: []
+  /api/v1/auth/refresh:
+    post:
+      tags:
+      - Authentication
+      summary: Refresh a customer access token
+      description: >-
+        Uses the refresh_token cookie or an optional request body token. A nonempty
+        body token takes precedence. On success, a returned refresh token is rotated
+        in an HttpOnly cookie and only the access token is returned in JSON.
+      operationId: refreshAccessToken
+      security:
+      - {}
+      parameters:
+      - name: refresh_token
+        in: cookie
+        required: false
+        schema:
+          type: string
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AuthRefreshRequest'
+      responses:
+        '200':
+          description: Access token refreshed; the refresh cookie is rotated when Core returns one.
+          headers:
+            Set-Cookie:
+              description: Rotated HttpOnly refresh_token cookie when available.
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthRefreshResponse'
+        '401':
+          description: The refresh token is missing or rejected; the refresh cookie is cleared.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthRefreshErrorResponse'
+        '502':
+          description: Core is unavailable or returned an invalid response.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthRefreshErrorResponse'
   /api/v1/products:
     get:
       tags:
@@ -634,6 +682,156 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+  /api/v1/credit:
+    get:
+      tags:
+      - Credit
+      summary: Read the authenticated buyer's available credit
+      operationId: getCreditBalance
+      description: >-
+        Returns a balance of 0.00 ARS when no credit exists for the buyer.
+        All error fields must be sanitized and must never contain gift card codes
+        or bearer tokens.
+      security:
+      - BearerAuth: []
+      responses:
+        '200':
+          description: Current available credit.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CreditCacheControl'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CreditBalance'
+        '401':
+          $ref: '#/components/responses/CreditUnauthorized'
+        '502':
+          $ref: '#/components/responses/CreditUpstreamFailure'
+  /api/v1/gift-cards/redeem:
+    post:
+      tags:
+      - Credit
+      summary: Redeem a gift card into the authenticated buyer's credit
+      operationId: redeemGiftCard
+      description: >-
+        The card is consumed and its full value is credited atomically. Gift card
+        codes and bearer tokens must not be logged. Codes must not be included in
+        URLs or returned in responses. All error fields must be sanitized and must
+        never contain gift card codes or bearer tokens.
+        Invalid and already redeemed codes must produce indistinguishable errors.
+      security:
+      - BearerAuth: []
+      parameters:
+      - $ref: '#/components/parameters/CreditIdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RedeemGiftCardRequest'
+      responses:
+        '200':
+          description: Balance snapshot at the time of redemption.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CreditCacheControl'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CreditBalance'
+        '400':
+          $ref: '#/components/responses/CreditInvalidRequest'
+        '401':
+          $ref: '#/components/responses/CreditUnauthorized'
+        '409':
+          description: Sanitized error when the idempotency key was previously used for a different request.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CreditCacheControl'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CreditErrorResponse'
+        '422':
+          description: Sanitized error when the card cannot be redeemed; invalid and used codes return the same error.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CreditCacheControl'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CreditErrorResponse'
+        '502':
+          $ref: '#/components/responses/CreditUpstreamFailure'
+  /api/v1/checkout/credit:
+    post:
+      tags:
+      - Orders
+      - Credit
+      summary: Create and pay for an order using account credit
+      operationId: checkoutWithCredit
+      description: >-
+        The authenticated buyer is determined from the bearer token and the server
+        calculates the total. Order creation, credit debit, stock decrement, invoice
+        creation, and purchased cart quantity updates are atomic. Insufficient credit
+        or stock causes no partial changes. No payment provider is called.
+        A pending Mercado Pago order owned by the buyer blocks a new credit checkout.
+        After the pending order is resolved, start a new attempt with a new key.
+        A 400 INVALID response is a local validation rejection and does not establish
+        whether an earlier request with the key completed. If an earlier outcome is
+        unknown, retry the original request with the same key. A 400
+        ADDRESS_REQUIRED_RECORDED response is a Core rejection recorded against
+        the key; retrying the same payload returns that rejection while its record
+        is retained, and corrected input requires a new key during that period.
+        The older ADDRESS_REQUIRED code is ambiguous
+        and does not confirm whether the key was recorded.
+        All error fields must be sanitized and must never contain gift card codes
+        or bearer tokens.
+      security:
+      - BearerAuth: []
+      parameters:
+      - $ref: '#/components/parameters/CreditIdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CheckoutRequest'
+      responses:
+        '200':
+          description: Paid order and balance snapshot at the time of purchase.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CreditCacheControl'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CreditCheckoutResponse'
+        '400':
+          $ref: '#/components/responses/CreditInvalidRequest'
+        '401':
+          $ref: '#/components/responses/CreditUnauthorized'
+        '409':
+          description: Sanitized error for insufficient credit or stock, a pending payment (PENDING_PAYMENT), or an idempotency key conflict.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CreditCacheControl'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CreditErrorResponse'
+        '422':
+          description: Sanitized error when the cart is empty or the order cannot be paid.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/CreditCacheControl'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CreditErrorResponse'
+        '502':
+          $ref: '#/components/responses/CreditUpstreamFailure'
   /api/v1/checkout:
     post:
       tags:
@@ -734,6 +932,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/OrderErrorResponse'
+        '409':
+          description: An approved payment requires manual review (PAYMENT_REQUIRES_REVIEW); no automatic refund is performed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrderErrorResponse'
         '422':
           description: Core could not verify this payment for the order.
           content:
@@ -826,8 +1030,13 @@ paths:
     post:
       tags:
       - Orders
-      summary: Initialize a new payment attempt for a rejected order
+      summary: Initialize a new payment attempt for an eligible order
       operationId: retryOrderPayment
+      description: >-
+        Rejected or pending orders can be retried when they have no unresolved
+        payment attempt, unreleased payment review, or credit retry guard. An unresolved
+        attempt returns PENDING_PAYMENT. An unreleased payment review returns
+        PAYMENT_REQUIRES_REVIEW and does not unblock automatically.
       security:
       - BearerAuth: []
       - XOpKey: []
@@ -859,6 +1068,12 @@ paths:
                 $ref: '#/components/schemas/OrderErrorResponse'
         '404':
           description: The order does not exist or is not owned by the caller.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrderErrorResponse'
+        '409':
+          description: A payment attempt requires reconciliation (PENDING_PAYMENT), or a payment requires manual review (PAYMENT_REQUIRES_REVIEW).
           content:
             application/json:
               schema:
@@ -931,6 +1146,65 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+  /api/v1/admin/gift-cards:
+    post:
+      tags:
+      - Administration
+      summary: Issue a single-use gift card
+      description: >-
+        Creates a card for an administrator and returns its code only once.
+        The code must not be logged or cached. Repeated requests create separate cards.
+        All error fields must be sanitized and must never contain gift card codes
+        or bearer tokens.
+      operationId: adminCreateGiftCard
+      security:
+      - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminGiftCardCreateRequest'
+      responses:
+        '201':
+          description: Gift card issued; the code is returned only once.
+          headers:
+            Cache-Control:
+              required: true
+              description: Prevents the response containing the card code from being cached.
+              schema:
+                type: string
+                enum:
+                - no-store
+              example: no-store
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminGiftCardCreateResponse'
+        '400':
+          description: Invalid amount or request body.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Authentication required.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Administrator permission required.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '502':
+          description: Core unavailable or invalid response; issuance outcome may be unknown.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 components:
   securitySchemes:
     BearerAuth:
@@ -944,6 +1218,22 @@ components:
       description: Operations key for privileged internal operations (one-time raw
         key shown at creation).
   parameters:
+    CreditIdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      description: >-
+        Client-generated UUID scoped to the authenticated buyer and operation.
+        A repeated request with the same key and payload returns the original
+        successful response snapshot without repeating effects, with no expiration.
+        Core retains recorded rejections for 30 days; after expiration the key may
+        be processed as a new request. A different payload reaching Core's
+        idempotency check while a record exists returns 409. Validation
+        in the BFF or Core may reject a request before that check. If the outcome is unknown after an upstream
+        failure, retry the same request with the same key. Never persist raw card codes.
+      schema:
+        type: string
+        format: uuid
     GuestCartCookie:
       name: cart_id
       in: cookie
@@ -1038,7 +1328,188 @@ components:
         maximum: 200
         default: 50
       example: 50
+  headers:
+    CreditCacheControl:
+      required: true
+      description: Prevents credit responses from being cached.
+      schema:
+        type: string
+        enum:
+        - no-store
+  responses:
+    CreditInvalidRequest:
+      description: Sanitized error for an invalid request body or idempotency key.
+      headers:
+        Cache-Control:
+          $ref: '#/components/headers/CreditCacheControl'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/CreditErrorResponse'
+    CreditUnauthorized:
+      description: Sanitized error for a missing or invalid bearer token.
+      headers:
+        Cache-Control:
+          $ref: '#/components/headers/CreditCacheControl'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/CreditErrorResponse'
+    CreditUpstreamFailure:
+      description: >-
+        Core is unavailable or returned an invalid response. For POST requests the
+        outcome may be unknown; retry the same request with the same idempotency key.
+        The response must not include upstream information, gift card codes, or tokens.
+      headers:
+        Cache-Control:
+          $ref: '#/components/headers/CreditCacheControl'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/CreditUpstreamError'
   schemas:
+    AuthRefreshRequest:
+      type: object
+      properties:
+        refresh_token:
+          type: string
+          writeOnly: true
+    AuthRefreshResponse:
+      type: object
+      required:
+      - access_token
+      properties:
+        access_token:
+          type: string
+    AuthRefreshErrorResponse:
+      type: object
+      required:
+      - detail
+      properties:
+        detail:
+          type: string
+    CreditErrorResponse:
+      type: object
+      additionalProperties: false
+      description: >-
+        All error fields must be sanitized and must never contain gift card codes
+        or bearer tokens.
+      required:
+      - errors
+      properties:
+        errors:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required:
+            - code
+            - message
+            properties:
+              code:
+                type: string
+              message:
+                type: string
+                description: Sanitized public error message.
+              field:
+                type:
+                - array
+                - 'null'
+                items:
+                  type: string
+    CreditUpstreamError:
+      type: object
+      additionalProperties: false
+      required:
+      - error
+      properties:
+        error:
+          type: string
+          enum:
+          - Credit service unavailable
+    CreditBalance:
+      type: object
+      additionalProperties: false
+      required:
+      - balance
+      - currency
+      properties:
+        balance:
+          type: string
+          pattern: '^[0-9]+\.[0-9]{2}$'
+          description: Available balance as a decimal string with two fractional digits.
+          example: '20000.00'
+        currency:
+          type: string
+          enum:
+          - ARS
+    RedeemGiftCardRequest:
+      type: object
+      additionalProperties: false
+      required:
+      - code
+      properties:
+        code:
+          type: string
+          writeOnly: true
+          description: Sensitive single-use gift card code.
+    CreditCheckoutResponse:
+      type: object
+      additionalProperties: false
+      required:
+      - order
+      - credit
+      properties:
+        order:
+          allOf:
+          - $ref: '#/components/schemas/PurchaseOrder'
+          - type: object
+            required:
+            - status
+            - invoice
+            properties:
+              status:
+                type: string
+                enum:
+                - paid
+              invoice:
+                $ref: '#/components/schemas/Invoice'
+        credit:
+          $ref: '#/components/schemas/CreditBalance'
+    AdminGiftCardCreateRequest:
+      type: object
+      additionalProperties: false
+      required:
+      - amount
+      properties:
+        amount:
+          type: string
+          pattern: '^[0-9]{1,10}(\.[0-9]{1,2})?$'
+          description: Positive amount in ARS, with up to two decimal places.
+          example: '20000.00'
+    AdminGiftCardCreateResponse:
+      type: object
+      additionalProperties: false
+      required:
+      - id
+      - code
+      - amount
+      - currency
+      properties:
+        id:
+          type: string
+          format: uuid
+        code:
+          type: string
+          pattern: '^[0-9a-f]{64}$'
+          description: Sensitive redemption code returned only once.
+        amount:
+          type: string
+          example: '20000.00'
+        currency:
+          type: string
+          enum:
+          - ARS
     CartItemRequest:
       type: object
       required:
@@ -1498,22 +1969,28 @@ components:
     ShippingAddress:
       type: object
       additionalProperties: false
+      description: >-
+        Limits apply to the supplied strings before trimming. Mercado Pago
+        checkout trims the fields; credit checkout preserves the submitted
+        values for idempotency. For standard delivery, recipient, street, city,
+        and postal code must contain non-whitespace characters. Explicit null
+        values are not accepted.
       properties:
         recipient:
           type: string
-          maxLength: 255
+          maxLength: 250
         street:
           type: string
-          maxLength: 255
+          maxLength: 500
         city:
           type: string
-          maxLength: 255
+          maxLength: 150
         postal_code:
           type: string
-          maxLength: 255
+          maxLength: 32
         phone:
           type: string
-          maxLength: 255
+          maxLength: 50
     ConfirmPaymentRequest:
       type: object
       additionalProperties: false

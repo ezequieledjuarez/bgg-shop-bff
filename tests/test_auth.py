@@ -1,7 +1,11 @@
 from unittest.mock import MagicMock, patch
+import traceback
+
+import pytest
+import requests
 
 from app import app
-from src.proxy import UpstreamError, authenticate_account, register_account
+from src.proxy import UpstreamError, _auth_request, authenticate_account, register_account
 
 
 VALID_USER = {
@@ -16,6 +20,26 @@ VALID_SESSION = {
     "refresh_token": "refresh-token",
     "csrf_token": None,
 }
+
+
+@pytest.mark.parametrize("failure", ["timeout", "graphql", "response"])
+def test_auth_transport_never_logs_passwords_or_upstream_details(failure, capsys, caplog):
+    secret = "synthetic-private-password"
+    response = MagicMock()
+    response.text = secret
+    response.json.return_value = {"errors": [{"message": secret}]} if failure == "graphql" else {"data": {"products": []}}
+    caplog.set_level("INFO")
+    with patch("builtins.open", create=True) as file_open, \
+            patch("requests.post", side_effect=requests.Timeout(secret) if failure == "timeout" else None, return_value=response):
+        if failure == "response":
+            _auth_request("query products { products }", {"password": secret})
+        else:
+            with pytest.raises(UpstreamError) as raised:
+                _auth_request("query products { products }", {"password": secret})
+            assert secret not in "".join(traceback.format_exception(raised.value))
+        UpstreamError("generic", response_text=secret)
+    captured = capsys.readouterr()
+    assert secret not in captured.out + captured.err + caplog.text + str(file_open.mock_calls)
 
 
 def test_register_returns_created_account_without_session():

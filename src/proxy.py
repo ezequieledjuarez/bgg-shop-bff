@@ -30,31 +30,6 @@ class UpstreamError(Exception):
         self.code = code
         self.field = field
         self.user_error = user_error
-        # Best-effort persist response_text for offline triage
-        if response_text:
-            try:
-                import json, datetime
-                # include any request_id present in context for easier correlation
-                request_id = None
-                if isinstance(context, dict):
-                    request_id = context.get('request_id')
-                out = {
-                    "ts": datetime.datetime.utcnow().isoformat() + "Z",
-                    "note": "upstream_error_persisted",
-                    "message": str(message),
-                    "code": code,
-                    "field": field,
-                    "context": context,
-                    "request_id": request_id,
-                    "text_snippet": response_text[:8000],
-                }
-                try:
-                    with open('/tmp/bff-graphql-error.log', 'a', encoding='utf-8') as fh:
-                        fh.write(json.dumps(out, ensure_ascii=False) + "\n")
-                except Exception:
-                    pass
-            except Exception:
-                pass
 
 
 def _required_text(payload, name, minimum=1, maximum=254):
@@ -77,34 +52,11 @@ def _auth_request(query, variables):
         )
         response.raise_for_status()
         payload = response.json()
-        # Best-effort persist full response text for product queries to aid triage
-        try:
-            if isinstance(query, str) and 'products' in query.lower():
-                try:
-                    import json, datetime
-                    out = {
-                        "request_id": request_id,
-                        "ts": datetime.datetime.utcnow().isoformat() + "Z",
-                        "note": "outgoing_graphql_response_products",
-                        "status_code": getattr(response, 'status_code', None),
-                        "text_snippet": response.text[:8000],
-                        "variables": variables,
-                    }
-                    with open('/tmp/bff-graphql-outgoing.log', 'a', encoding='utf-8') as fh:
-                        fh.write(json.dumps(out, ensure_ascii=False) + "\n")
-                except Exception:
-                    pass
-        except Exception:
-            pass
-    except (requests.RequestException, ValueError) as exc:
-        # Log contextual info for triage before re-raising
-        try:
-            logger.error("_auth_request failed: query=%s variables=%s error=%s", query.replace('\n',' ')[:400], variables, exc)
-        except Exception:
-            logger.error("_auth_request failed and logging failed: %s", exc)
-        raise UpstreamError(str(exc), response_text=getattr(response, 'text', None), context={"request_id": request_id}) from exc
+    except (requests.RequestException, ValueError):
+        logger.error("Authentication upstream request failed (request_id=%s)", request_id)
+        raise UpstreamError("Authentication upstream request failed", context={"request_id": request_id}) from None
     if payload.get("errors"):
-        logger.error("_auth_request GraphQL returned errors: payload=%s", payload)
+        logger.error("Authentication GraphQL request returned errors (request_id=%s)", request_id)
         raise UpstreamError("GraphQL upstream returned errors")
     return payload
 
@@ -307,24 +259,6 @@ def list_products(
     """
     request_id = str(uuid.uuid4())
     headers = {"Authorization": token} if token else {}
-    # Best-effort persist outgoing Products GraphQL request for offline triage
-    try:
-        import json, datetime
-        out = {
-            "request_id": request_id,
-            "ts": datetime.datetime.utcnow().isoformat() + "Z",
-            "note": "outgoing_graphql_request_products",
-            "headers": {"Authorization": (token[:20] + '...') if token and isinstance(token, str) else None},
-            "variables": {"page": page, "pageSize": page_size, **filters},
-            "query_snippet": query.replace('\n', ' ')[:2000],
-        }
-        try:
-            with open('/tmp/bff-graphql-outgoing.log', 'a', encoding='utf-8') as fh:
-                fh.write(json.dumps(out, ensure_ascii=False) + "\n")
-        except Exception:
-            pass
-    except Exception:
-        pass
     try:
         response = requests.post(
             os.getenv("SALEOR_GRAPHQL_URL", DEFAULT_GRAPHQL_URL),
@@ -334,80 +268,17 @@ def list_products(
         )
         response.raise_for_status()
         payload = response.json()
-    except (requests.RequestException, ValueError) as exc:
-        # Log request/response context to help root-cause analysis
-        try:
-            masked = None
-            if token and isinstance(token, str):
-                masked = token[:10] + '...'
-            logger.error("list_products upstream failure. page=%s page_size=%s filters=%s token=%s exc=%s",
-                         page, page_size, filters, masked, exc)
-        except Exception:
-            logger.exception("Failed to log list_products failure")
-        # Attempt to persist response text if available for offline inspection
-        try:
-            if 'response' in locals() and hasattr(response, 'text'):
-                import json, datetime
-                out = {
-                    'request_id': request_id,
-                    'ts': datetime.datetime.utcnow().isoformat() + 'Z',
-                    'note': 'list_products request exception',
-                    'status_code': getattr(response, 'status_code', None),
-                    'text_snippet': response.text[:8000],
-                    'filters': filters,
-                }
-                try:
-                    with open('/tmp/bff-graphql-error.log', 'a', encoding='utf-8') as fh:
-                        fh.write(json.dumps(out, ensure_ascii=False) + "\n")
-                except Exception:
-                    pass
-        except Exception:
-            logger.exception("Failed to persist list_products exception response")
-        raise UpstreamError(str(exc), response_text=getattr(response, 'text', None), context={"request_id": request_id}) from exc
+    except (requests.RequestException, ValueError):
+        logger.error("Products upstream request failed (request_id=%s)", request_id)
+        raise UpstreamError("Products upstream request failed", context={"request_id": request_id}) from None
 
     if payload.get("errors"):
-        logger.error("list_products GraphQL returned errors: payload=%s", payload)
-        # Persist the failing payload for offline inspection inside the container
-        try:
-            import json, datetime
-            out = {
-                'request_id': request_id,
-                "ts": datetime.datetime.utcnow().isoformat() + "Z",
-                "note": "list_products returned errors",
-                "status_code": getattr(response, 'status_code', None),
-                "payload": payload,
-                "variables": {"page": page, "pageSize": page_size, **filters},
-            }
-            try:
-                with open('/tmp/bff-graphql-error.log', 'a', encoding='utf-8') as fh:
-                    fh.write(json.dumps(out, ensure_ascii=False) + "\n")
-            except Exception:
-                pass
-        except Exception:
-            logger.exception("Failed to persist list_products failing payload")
+        logger.error("Products GraphQL request returned errors (request_id=%s)", request_id)
         raise UpstreamError("GraphQL upstream returned errors")
 
     products = (payload.get("data") or {}).get("products")
     if not products:
-        # Log and persist the unexpected empty products payload for triage
-        try:
-            logger.error("list_products received empty products payload: %s", payload)
-            import json, datetime
-            out = {
-                'request_id': request_id,
-                "ts": datetime.datetime.utcnow().isoformat() + "Z",
-                "note": "list_products returned no products data",
-                "status_code": getattr(response, 'status_code', None),
-                "payload": payload,
-                "variables": {"page": page, "pageSize": page_size, **filters},
-            }
-            try:
-                with open('/tmp/bff-graphql-error.log', 'a', encoding='utf-8') as fh:
-                    fh.write(json.dumps(out, ensure_ascii=False) + "\n")
-            except Exception:
-                pass
-        except Exception:
-            logger.exception("Failed to persist empty products payload")
+        logger.error("Products GraphQL response contained no products (request_id=%s)", request_id)
         raise UpstreamError("GraphQL upstream returned no products data")
 
     try:
@@ -435,9 +306,9 @@ def list_products(
             "total": products["total"],
             "total_pages": products["totalPages"],
         }
-    except (KeyError, TypeError) as exc:
-        logger.exception("Invalid product payload structure: %s", payload)
-        raise UpstreamError("GraphQL upstream returned an invalid product payload") from exc
+    except (KeyError, TypeError):
+        logger.error("Invalid products payload (request_id=%s)", request_id)
+        raise UpstreamError("GraphQL upstream returned an invalid product payload") from None
     # end of list_products
 
 
@@ -458,109 +329,7 @@ def _graphql_request(query, variables, token=None, op_key=None, map_wishlist_err
     except Exception:
         # not running in Flask request context or header missing
         pass
-    # Persist a compact trace of forwarded headers for offline debugging
     try:
-        import json, datetime
-        trace = {
-            'ts': datetime.datetime.utcnow().isoformat() + 'Z',
-            'note': '_graphql_request_forwarded_headers',
-            'request_id': request_id,
-            'forwarded_headers': {k: (v[:20] + '...') if isinstance(v, str) and len(v) > 20 else v for k,v in headers.items()},
-            'pid': os.getpid(),
-            'correlation_id': None,
-        }
-        try:
-            # try to obtain correlation id from flask g if available
-            from flask import g as _g
-            cid = getattr(_g, 'correlation_id', None)
-            if cid:
-                trace['correlation_id'] = cid
-        except Exception:
-            pass
-        with open('/tmp/bff-calltrace.log', 'a', encoding='utf-8') as fh:
-            fh.write(json.dumps(trace, ensure_ascii=False) + "\n")
-    except Exception:
-        pass
-    try:
-        # Also persist incoming request header snapshot for correlation
-        from flask import request as _flask_request
-        import json, datetime
-        incoming = {k: (v[:40] + '...') if isinstance(v, str) and len(v) > 40 else v for k, v in dict(_flask_request.headers).items()}
-        with open('/tmp/bff-calltrace.log', 'a', encoding='utf-8') as fh:
-            fh.write(json.dumps({'ts': datetime.datetime.utcnow().isoformat() + 'Z', 'note': '_graphql_request_incoming_headers', 'request_id': request_id, 'incoming_headers': incoming}, ensure_ascii=False) + "\n")
-    except Exception:
-        pass
-    # Debug logging to capture outgoing GraphQL requests/responses for triage
-    try:
-        logger.info("Outgoing GraphQL request headers=%s variables=%s", headers, variables)
-        logger.info("Outgoing GraphQL query: %s", query.replace('\n', ' ')[:1000])
-    except Exception:
-        # Best-effort logging; never fail the request due to logging
-        pass
-    # Best-effort persist outgoing GraphQL request for offline triage
-    try:
-        import json, datetime
-        out = {
-            "request_id": request_id,
-            "ts": datetime.datetime.utcnow().isoformat() + "Z",
-            "note": "outgoing_graphql_request",
-            "headers": headers,
-            "variables": variables,
-            "query_snippet": query.replace('\n', ' ')[:2000],
-        }
-        try:
-            with open('/tmp/bff-graphql-outgoing.log', 'a', encoding='utf-8') as fh:
-                fh.write(json.dumps(out, ensure_ascii=False) + "\n")
-        except Exception:
-            # swallow persistence errors
-            pass
-    except Exception:
-        pass
-    try:
-        # Temporary diagnostic snapshot before making the outgoing HTTP call.
-        # Persist a compact diagnostic record (url, headers, variables, stack)
-        # to help triage intermittent cases where headers become empty.
-        try:
-            import traceback, json, datetime, os
-
-            diag = {
-                "request_id": request_id,
-                "ts": datetime.datetime.utcnow().isoformat() + "Z",
-                "note": "outgoing_graphql_diagnostic",
-                "url": os.getenv("SALEOR_GRAPHQL_URL", DEFAULT_GRAPHQL_URL),
-                "headers": headers,
-                "variables": variables,
-                "stack": traceback.format_stack()[-8:],
-            }
-            with open('/tmp/bff-proxy-diagnostic.log', 'a', encoding='utf-8') as fh:
-                fh.write(json.dumps(diag, ensure_ascii=False) + "\n")
-        except Exception:
-            # swallow diagnostic failures
-            pass
-
-        logger.info("Performing GraphQL POST to %s headers=%s", os.getenv("SALEOR_GRAPHQL_URL", DEFAULT_GRAPHQL_URL), headers)
-        # Persist a complete outgoing snapshot for offline inspection (unique per request)
-        try:
-            import json as _json, datetime as _datetime, os as _os
-            diag_file = f"/tmp/bff-outgoing-{request_id}.json"
-            out_full = {
-                "request_id": request_id,
-                "ts": _datetime.datetime.utcnow().isoformat() + "Z",
-                "note": "outgoing_graphql_full",
-                "url": os.getenv("SALEOR_GRAPHQL_URL", DEFAULT_GRAPHQL_URL),
-                "headers": headers,
-                "variables": variables,
-                "query": query,
-                "pid": _os.getpid(),
-            }
-            try:
-                with open(diag_file, 'w', encoding='utf-8') as _fh:
-                    _fh.write(_json.dumps(out_full, ensure_ascii=False, indent=2))
-            except Exception:
-                pass
-        except Exception:
-            pass
-
         response = requests.post(
             os.getenv("SALEOR_GRAPHQL_URL", DEFAULT_GRAPHQL_URL),
             json={"query": query, "variables": variables},
@@ -569,48 +338,9 @@ def _graphql_request(query, variables, token=None, op_key=None, map_wishlist_err
         )
         response.raise_for_status()
         payload = response.json()
-        try:
-            logger.info("GraphQL response payload keys=%s", list(payload.keys()) if isinstance(payload, dict) else type(payload))
-            # If the upstream returned errors or userErrors nested in data, log full payload for triage
-            has_user_errors = False
-            if isinstance(payload, dict):
-                if payload.get('errors'):
-                    has_user_errors = True
-                else:
-                    # check common mutation shapes for userErrors
-                    data = payload.get('data') or {}
-                    for v in data.values():
-                        if isinstance(v, dict) and (v.get('userErrors') or v.get('errors')):
-                            has_user_errors = True
-                            break
-            if has_user_errors:
-                logger.info("GraphQL full payload for error investigation: %s", payload)
-        except Exception:
-            pass
-    except (requests.RequestException, ValueError) as exc:
-        # Log context for debugging network or parse errors
-        try:
-            logger.error("_graphql_request failed. headers=%s variables=%s error=%s", headers, variables, exc)
-            # Attempt to log response text if available
-            if 'response' in locals() and hasattr(response, 'text'):
-                logger.error("_graphql_request response_text=%s", response.text[:2000])
-                # Also persist the failing response to a temp file for offline inspection
-                try:
-                    import json, datetime
-                    out = {
-                        'request_id': request_id,
-                        'ts': datetime.datetime.utcnow().isoformat() + 'Z',
-                        'status_code': getattr(response, 'status_code', None),
-                        'text_snippet': response.text[:8000],
-                        'variables': variables,
-                    }
-                    with open('/tmp/bff-graphql-error.log', 'a', encoding='utf-8') as fh:
-                        fh.write(json.dumps(out, ensure_ascii=False) + "\n")
-                except Exception:
-                    pass
-        except Exception:
-            logger.exception("Failed to log _graphql_request error")
-        raise UpstreamError(str(exc), response_text=getattr(response, 'text', None), context={"request_id": request_id}) from exc
+    except (requests.RequestException, ValueError):
+        logger.error("GraphQL upstream request failed (request_id=%s)", request_id)
+        raise UpstreamError("GraphQL upstream request failed", context={"request_id": request_id}) from None
     if not isinstance(payload, dict):
         raise UpstreamError("GraphQL upstream returned an invalid response")
     if map_wishlist_errors:
@@ -1116,7 +846,7 @@ def get_invoice(order_id, token):
     graphql_url = os.getenv("SALEOR_GRAPHQL_URL", DEFAULT_GRAPHQL_URL)
     parsed = urlsplit(graphql_url)
     base_path = parsed.path.rstrip("/").rsplit("/graphql", 1)[0]
-    invoice_url = urlunsplit((parsed.scheme, parsed.netloc, base_path + "/invoices/" + identifier, "", ""))
+    invoice_url = urlunsplit((parsed.scheme, parsed.netloc, base_path + "/invoices/" + identifier + "/", "", ""))
     try:
         response = requests.get(
             invoice_url,
@@ -1127,8 +857,8 @@ def get_invoice(order_id, token):
         if response.status_code != 404:
             response.raise_for_status()
         return response
-    except requests.RequestException as exc:
-        raise UpstreamError(str(exc), response_text=getattr(response, 'text', None)) from exc
+    except requests.RequestException:
+        raise UpstreamError("Invoice upstream request failed") from None
 
 
 def check_admin(token):
@@ -1148,22 +878,6 @@ def check_admin(token):
         key = hashlib.sha256(token.encode('utf-8')).hexdigest()
     except Exception:
         key = token[:64]
-
-    # Best-effort pre-call dump to correlate incoming request -> outgoing WhoAmI
-    try:
-        import json, datetime
-        out = {
-            "ts": datetime.datetime.utcnow().isoformat() + "Z",
-            "note": "check_admin_pre_call",
-            "token_masked": (token[:20] + '...') if token and isinstance(token, str) else None,
-        }
-        try:
-            with open('/tmp/bff-graphql-outgoing.log', 'a', encoding='utf-8') as fh:
-                fh.write(json.dumps(out, ensure_ascii=False) + "\n")
-        except Exception:
-            pass
-    except Exception:
-        pass
 
     # Try cached result
     now = time.time()
@@ -1185,47 +899,10 @@ def check_admin(token):
     base_delay = float(os.getenv("WHOAMI_RETRY_BASE_DELAY_SECONDS", 0.25))
     last_payload = None
     for attempt in range(0, attempts + 1):
-        try:
-            payload = _graphql_request(query, {}, token)
-        except UpstreamError as exc:
-            # Persist upstream failure context for offline triage
-            try:
-                import json, datetime
-                out = {
-                    "ts": datetime.datetime.utcnow().isoformat() + "Z",
-                    "note": "check_admin upstream error",
-                    "error": str(exc),
-                    "attempt": attempt,
-                    "token_masked": (token[:10] + "...") if token and isinstance(token, str) else None,
-                }
-                try:
-                    with open('/tmp/bff-graphql-error.log', 'a', encoding='utf-8') as fh:
-                        fh.write(json.dumps(out, ensure_ascii=False) + "\n")
-                except Exception:
-                    pass
-            except Exception:
-                pass
-            # For network/parse errors, propagate immediately (don't retry)
-            raise
+        payload = _graphql_request(query, {}, token)
 
         # If upstream returned GraphQL errors, surface as upstream failure
         if payload.get("errors"):
-            try:
-                import json, datetime
-                out = {
-                    "ts": datetime.datetime.utcnow().isoformat() + "Z",
-                    "note": "check_admin returned errors",
-                    "payload": payload,
-                    "attempt": attempt,
-                    "token_masked": (token[:10] + "...") if token and isinstance(token, str) else None,
-                }
-                try:
-                    with open('/tmp/bff-graphql-error.log', 'a', encoding='utf-8') as fh:
-                        fh.write(json.dumps(out, ensure_ascii=False) + "\n")
-                except Exception:
-                    pass
-            except Exception:
-                pass
             raise UpstreamError("GraphQL upstream returned errors")
 
         last_payload = payload
@@ -1239,24 +916,6 @@ def check_admin(token):
             except Exception:
                 pass
             return is_admin
-
-        # me is null or invalid — persist a detailed note but DO NOT cache yet
-        try:
-            import json, datetime
-            out = {
-                "ts": datetime.datetime.utcnow().isoformat() + "Z",
-                "note": "check_admin invalid me payload",
-                "payload": payload,
-                "attempt": attempt,
-                "token_masked": (token[:10] + "...") if token and isinstance(token, str) else None,
-            }
-            try:
-                with open('/tmp/bff-graphql-error.log', 'a', encoding='utf-8') as fh:
-                    fh.write(json.dumps(out, ensure_ascii=False) + "\n")
-            except Exception:
-                pass
-        except Exception:
-            pass
 
         # If we have more attempts left, wait a bit and retry
         if attempt < attempts:
@@ -1376,22 +1035,6 @@ def create_product(payload, token=None, op_key=None):
     # Basic validation
     if not isinstance(payload, dict):
         raise ValueError("payload must be an object")
-    # Debug: persist incoming token/op_key for triage
-    try:
-        import json, datetime
-        dbg = {
-            'ts': datetime.datetime.utcnow().isoformat() + 'Z',
-            'note': 'create_product_incoming_debug',
-            'token_present': bool(token),
-            'token_masked': (token[:10] + '...') if token and isinstance(token, str) and len(token) > 13 else token,
-            'op_key_present': bool(op_key),
-            'op_key_masked': (op_key[:6] + '...' + op_key[-4:]) if op_key and isinstance(op_key, str) else op_key,
-            'payload_sample': {'name': payload.get('name')}
-        }
-        with open('/tmp/bff-graphql-outgoing.log', 'a', encoding='utf-8') as fh:
-            fh.write(json.dumps(dbg, ensure_ascii=False) + "\n")
-    except Exception:
-        pass
     # Normalize payload to GraphQL contract: expect camelCase only.
     # Map legacy/incorrect client fields to the canonical contract names.
     if isinstance(payload, dict):
@@ -1460,27 +1103,8 @@ def create_product(payload, token=None, op_key=None):
             'bgg_id': product.get('bggId'),
             'name': product.get('name'),
         }
-        # Debug: record attempt and success markers to help triage missing file writes
-        try:
-            with open('/tmp/bff-created-products-debug.log', 'a', encoding='utf-8') as dbgfh:
-                dbgfh.write(json.dumps({"ts": datetime.datetime.utcnow().isoformat() + 'Z', "note": "create_product_write_attempt", "rec": rec}, ensure_ascii=False) + "\n")
-        except Exception:
-            pass
-        try:
-            with open('/tmp/bff-created-products.log', 'a', encoding='utf-8') as fh:
-                fh.write(json.dumps(rec, ensure_ascii=False) + "\n")
-        except Exception as e:
-            try:
-                with open('/tmp/bff-created-products-debug.log', 'a', encoding='utf-8') as dbgfh:
-                    dbgfh.write(json.dumps({"ts": datetime.datetime.utcnow().isoformat() + 'Z', "note": "create_product_write_failed", "error": str(e)}, ensure_ascii=False) + "\n")
-            except Exception:
-                pass
-        else:
-            try:
-                with open('/tmp/bff-created-products-debug.log', 'a', encoding='utf-8') as dbgfh:
-                    dbgfh.write(json.dumps({"ts": datetime.datetime.utcnow().isoformat() + 'Z', "note": "create_product_write_success", "bgg_id": product.get('bggId')}, ensure_ascii=False) + "\n")
-            except Exception:
-                pass
+        with open('/tmp/bff-created-products.log', 'a', encoding='utf-8') as fh:
+            fh.write(json.dumps(rec, ensure_ascii=False) + "\n")
     except Exception:
         pass
     return {"bgg_id": product.get("bggId"), "name": product.get("name")}
