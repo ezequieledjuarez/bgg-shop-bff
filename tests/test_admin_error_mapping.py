@@ -17,7 +17,7 @@ def test_create_product_maps_user_error_to_400_with_field():
     valid_payload = {"name": "Valid name", "price": 10.0, "quantity": 1}
     with patch("src.proxy.check_admin", return_value=True):
         with patch("src.controllers.admin_products_controller.admin_create_product_service", side_effect=raise_upstream):
-            resp = client.post("/admin/products", json=valid_payload, headers={"Authorization": "Bearer token"})
+            resp = client.post("/api/v1/admin/products", json=valid_payload, headers={"Authorization": "Bearer token"})
     assert resp.status_code == 400
     body = resp.get_json()
     assert "errors" in body and isinstance(body["errors"], list)
@@ -26,24 +26,83 @@ def test_create_product_maps_user_error_to_400_with_field():
     assert first["code"] == "INVALID_NAME"
 
 
-def test_adjust_stock_maps_user_error_to_400_with_field():
+@pytest.mark.parametrize("method,path,service,payload", [
+    ("POST", "/api/v1/admin/products", "admin_create_product_service", {"name": "Game", "price": 10, "quantity": 1}),
+    ("PUT", "/api/v1/admin/products/1", "admin_update_product_service", {"name": "Game"}),
+])
+@pytest.mark.parametrize("code,field,expected_status", [
+    ("NAME_REQUIRED", ["name"], 400),
+    ("SERVER_ERROR", ["synthetic-private-field"], 502),
+    ("synthetic-private-code", ["synthetic-private-field"], 502),
+])
+def test_product_user_errors_do_not_expose_upstream_details(method, path, service, payload, code, field, expected_status):
+    from src.proxy import UpstreamError
+
+    secret = "synthetic-private-upstream-message"
+    with patch("src.proxy.check_admin", return_value=True), \
+            patch(f"src.controllers.admin_products_controller.{service}", side_effect=UpstreamError(secret, code, field=field, user_error=True)):
+        response = app.test_client().open(path, method=method, json=payload, headers={"Authorization": "Bearer token"})
+    assert response.status_code == expected_status
+    body = response.get_data(as_text=True)
+    assert secret not in body
+    assert "synthetic-private-field" not in body
+    assert "synthetic-private-code" not in body
+    if code == "NAME_REQUIRED":
+        assert response.get_json()["errors"] == [{"field": "name", "code": "NAME_REQUIRED", "message": "Name is required"}]
+
+
+@pytest.mark.parametrize("method,path,service,payload", [
+    ("POST", "/api/v1/admin/products", "admin_create_product_service", {"name": "Game", "price": 10, "quantity": 1}),
+    ("PUT", "/api/v1/admin/products/1", "admin_update_product_service", {"name": "Game"}),
+])
+@pytest.mark.parametrize("code", ["UNAUTHENTICATED", "FORBIDDEN", "PRODUCT_NOT_FOUND"])
+def test_product_upstream_status_is_sanitized_and_matches_contract(method, path, service, payload, code):
+    from src.proxy import UpstreamError
+
+    expected = {"UNAUTHENTICATED": 401, "FORBIDDEN": 403, "PRODUCT_NOT_FOUND": 404 if method == "PUT" else 502}
+    with patch("src.proxy.check_admin", return_value=True), \
+            patch(f"src.controllers.admin_products_controller.{service}", side_effect=UpstreamError("synthetic-private-message", code, field="synthetic-private-field", user_error=True)):
+        response = app.test_client().open(path, method=method, json=payload, headers={"Authorization": "Bearer token"})
+    assert response.status_code == expected[code]
+    assert "synthetic-private" not in response.get_data(as_text=True)
+
+
+@pytest.mark.parametrize("method,path,service,payload", [
+    ("POST", "/api/v1/admin/products", "admin_create_product_service", {"name": "Game", "price": 10, "quantity": 1}),
+    ("PUT", "/api/v1/admin/products/1", "admin_update_product_service", {"name": "Game"}),
+])
+@pytest.mark.parametrize("code,message", [
+    ("DUPLICATE", "Product conflicts with existing data"),
+    ("NO_OP", "At least one field must be provided"),
+])
+def test_product_business_error_uses_static_public_response(method, path, service, payload, code, message):
+    from src.proxy import UpstreamError
+
+    with patch("src.proxy.check_admin", return_value=True), \
+            patch(f"src.controllers.admin_products_controller.{service}", side_effect=UpstreamError("synthetic-private-message", code, field="synthetic-private-field", user_error=True)):
+        response = app.test_client().open(path, method=method, json=payload, headers={"Authorization": "Bearer token"})
+    assert response.status_code == 400
+    assert response.get_json() == {"errors": [{"code": code, "message": message}]}
+
+
+def test_adjust_stock_maps_missing_product_to_404():
     client = app.test_client()
 
-    def raise_upstream(product_id, variant_id, new_stock):
+    def raise_upstream(product_id, movement_id, direction, quantity, token):
         from src.proxy import UpstreamError
 
-        raise UpstreamError("Variant not found", "VARIANT_NOT_FOUND", field="variant_id", user_error=True)
+        raise UpstreamError("private detail", "NOT_FOUND", user_error=True)
 
     with patch("src.proxy.check_admin", return_value=True):
-        with patch("src.controllers.admin_products_controller.adjust_variant_stock_service", side_effect=raise_upstream):
+        with patch("src.controllers.admin_products_controller.adjust_product_stock_service", side_effect=raise_upstream):
             resp = client.post(
-                "/admin/products/1/variants/999/adjust-stock",
-                json={"new_stock": 5},
+                "/api/v1/admin/products/999/stock",
+                json={"movement_id": "12345678-1234-4234-8234-123456789abc", "direction": "IN", "quantity": 5},
                 headers={"Authorization": "Bearer token"},
             )
-    assert resp.status_code == 400
+    assert resp.status_code == 404
     body = resp.get_json()
-    assert body["errors"][0]["code"] == "VARIANT_NOT_FOUND"
+    assert body == {"error": "Product not found", "movement_id": "12345678-1234-4234-8234-123456789abc"}
 
 
 def test_admin_product_cache_failure_does_not_log_sensitive_data(capsys, caplog):
@@ -84,7 +143,7 @@ def test_admin_product_cache_keeps_product_lookup_entry():
     [
         ("admin_create_product", "admin_create_product_service", "/admin/products", {"name": "Game", "price": 10, "quantity": 1}, ()),
         ("admin_update_product", "admin_update_product_service", "/admin/products/1", {"name": "Game"}, ("1",)),
-        ("admin_adjust_variant_stock", "adjust_variant_stock_service", "/admin/products/1/variants/2/adjust-stock", {"new_stock": 1}, ("1", "2")),
+        ("_admin_adjust_variant_stock", "adjust_product_stock_service", "/api/v1/admin/products/1/stock", {"movement_id": "12345678-1234-4234-8234-123456789abc", "direction": "IN", "quantity": 1}, ("1",)),
     ],
 )
 def test_admin_product_service_value_error_is_sanitized(controller, service, path, payload, arguments, capsys, caplog):
@@ -104,7 +163,7 @@ def test_admin_product_service_value_error_is_sanitized(controller, service, pat
     [
         ("admin_create_product", "/admin/products", {}, (), "name is required"),
         ("admin_update_product", "/admin/products/1", {}, ("1",), "at least one field must be provided"),
-        ("admin_adjust_variant_stock", "/admin/products/1/variants/2/adjust-stock", {"new_stock": -1}, ("1", "2"), "new_stock must be greater than or equal to 0"),
+        ("_admin_adjust_variant_stock", "/api/v1/admin/products/1/stock", {"movement_id": "12345678-1234-4234-8234-123456789abc", "direction": "IN", "quantity": -1}, ("1",), "quantity must be a positive 32-bit integer"),
     ],
 )
 def test_admin_product_validation_errors_remain_client_errors(controller, path, payload, arguments, message):

@@ -1,12 +1,12 @@
 # BFF Functional Specification: Customer Authentication (As-Built)
 
 **Input**: CU-C01
-**Status**: As-built / retrospective
+**Status**: Closed; implemented and validated with scope limitations (2026-10-30)
 **Scope**: The BFF REST boundary for registration and login, including its mapping to Core. Buyer-facing browser-session behavior remains described by the [canonical CU-C01 specification](../../../specs/001-authentication-as-built/spec.md).
 
 ## BFF responsibilities
 
-The BFF exposes registration and login as JSON REST operations. It validates and reshapes request data, calls the corresponding Core GraphQL mutation, maps the Core user/session result to the REST DTO, and translates known errors to HTTP responses. It does not provide a logout operation or independently implement credential verification.
+The BFF exposes registration and login as JSON REST operations. It validates and reshapes request data, calls the corresponding Core GraphQL mutation, maps the Core user/session result to the REST DTO, and translates known errors to HTTP responses. It does not independently implement credential verification. The separate [OpKey feature](../../../bgg-shop-core/specs/008-operations-keys-auth/spec.md) covers the BFF logout route.
 
 | BFF requirement | REST contract | Core operation | BFF behavior and evidence |
 | --- | --- | --- | --- |
@@ -16,8 +16,8 @@ The BFF exposes registration and login as JSON REST operations. It validates and
 
 ## Authentication boundary and limitations
 
-- Registration and login are the only BFF authentication routes in this feature. There is no BFF logout endpoint; local logout is outside this project's REST responsibility.
-- Login returns the Core session fields to the caller. The BFF does not store or rotate the buyer's access or refresh tokens.
+- Registration and login are the operations covered by this feature. The BFF also exposes logout: it revokes a supplied OpKey and clears the refresh cookie; it does not revoke already-issued JWTs. See the [OpKey specification](../../../bgg-shop-core/specs/008-operations-keys-auth/spec.md).
+- Login returns the Core session fields to the caller. The BFF proxies refresh requests and sets the returned refresh cookie; it does not independently issue or revoke JWTs.
 - Guest-cart handoff is limited to passing the cookie identifier in Core's login input and clearing the cookie after a successful response. Cart merging itself is a Core responsibility.
 - The BFF's tested registration response contains a user and no session. Registration is not described here as establishing a session.
 
@@ -29,7 +29,8 @@ The BFF exposes registration and login as JSON REST operations. It validates and
 - [Controller and route wiring](../../src/controllers/auth_controller.py), [application routes](../../app.py)
 - [Core proxy and REST DTOs](../../src/proxy.py), [auth DTOs](../../src/dtos/auth.py)
 - [BFF tests](../../tests/test_auth.py), [cart/login handoff tests](../../tests/test_cart.py)
+- On 2026-10-30, `python -m pytest -q -p no:cacheprovider tests/test_auth.py tests/test_cart.py --tb=short` passed 31 tests with 28 warnings. These tests use simulated dependencies and do not establish live Core database behavior.
 
 ## BFF scope exclusions
 
-The BFF does not establish the browser's persistent navigation state, implement server-side logout, define credential storage policy, or replace Core authentication and authorization. Those are not BFF operations evidenced by this layer.
+The BFF does not establish the browser's navigation state, revoke already-issued JWTs, define browser credential storage policy, or replace Core authentication and authorization. Browser behavior and live Core persistence are outside this BFF-only validation.

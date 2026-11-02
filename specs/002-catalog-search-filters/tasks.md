@@ -6,7 +6,7 @@ description: "Retrospective task list for CU-C02 in the BFF"
 
 **Input**: [`spec.md`](./spec.md) and [`plan.md`](./plan.md)
 **Prerequisites**: plan.md and spec.md
-**Retrospective status**: All listed implementation tasks are checked complete based on the ODD record; this file does not independently verify past implementation.
+**Status**: Closed with exceptions on 2026-10-30; see the [canonical closure](../../../specs/002-catalog-search-filters-as-built/spec.md). Checked tasks do not imply unreported verification.
 
 ## Format: `[ID] [P?] [Story] Description`
 
@@ -43,6 +43,7 @@ All task paths are relative to the `bgg-shop-bff` repository root.
 **Purpose**: Capture final contract, test, error-handling, and documentation work evidenced for this BFF feature.
 
 - [x] T004 [US1] Cover query forwarding, response mapping, validation, CORS, and upstream failure behavior in product tests; preserve the contract in OpenAPI.
+- [x] T005 [US1] Add dynamic category discovery and name filtering in [OpenAPI](../openapi.yaml), [controller](../../src/controllers/products_controller.py), [proxy](../../src/proxy.py), and [tests](../../tests/test_products.py), aligned with the [Core SDL](../../../bgg-shop-core/specs/schema.graphql).
 
 ## Dependencies & Execution Order
 
@@ -94,7 +95,8 @@ No parallel task execution is inferred. Keep the existing OpenAPI contract and C
 
 - BFF `python -m pytest` — 10 passed.
 - OpenAPI/Core GraphQL mapping and request validation are documented in the ODD implementation record.
+- On 2026-10-30, `python -m pytest -q tests/test_products.py` passed (19 tests, 13 warnings). Local browser/BFF/Core verification filtered all four present categories with matching products; the legacy ID request also returned HTTP 200. Broader service-contract tests had failures in unrelated cart, detail, and coupon mocks that do not accept `allow_redirects`.
 
 ## Pending Verification
 
-- No browser-based visual validation or live end-to-end validation with running services and a database was performed, per the ODD record.
+- The historical ODD record did not report browser or live end-to-end validation. The 2026-10-30 check above covers only the named category flow, not the full CU-C02 scope.

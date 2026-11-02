@@ -79,9 +79,9 @@ ODD-recorded BFF verification:
 - The ODD record reports structural review of OpenAPI paths/refs; YAML parser validation was unavailable because PyYAML and Ruby were not installed.
 - No live payment or Core request was made by the BFF verification described in the ODD record.
 
-- Pending verification: Payment with the sandbox buyer, paid transition, stock decrement, invoice persistence/PDF download, cart quantity clearing, and full guest-cart merge remain unverified. Full import_catalog.sql validation on a clean PostgreSQL is also unverified in the ODD record.
+- Later verification: [isolated browser E2E](../../../bgg-shop-frontend/tests/e2e/cart-wishlist-purchase.spec.ts) covered the paid flow with simulated payment and disposable PostgreSQL. The real provider round trip and complete clean-database bootstrap remain unverified; the [canonical spec](../../../specs/005-checkout-orders-invoice-as-built/spec.md) records the accepted second-payment exception.
 
-This plan is retrospective. It does not claim these implementation checks were rerun while generating this document. Behavior not verified by the cited ODD record remains pending.
+This plan is retrospective; later verification is distinguished from the historical ODD checks.
 
 ## Complexity Tracking
 

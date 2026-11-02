@@ -6,6 +6,8 @@ from decimal import Decimal, InvalidOperation
 import requests
 from flask import jsonify, request
 
+from ..proxy import graphql_auth_headers
+
 
 MUTATION = """
 mutation IssueGiftCard($amount: String!) {
@@ -25,7 +27,10 @@ def _response(payload, status):
 
 def create_gift_card():
     token = request.headers.get("Authorization", "")
-    if not re.fullmatch(r"Bearer\s+\S+", token, flags=re.IGNORECASE):
+    if token and not re.fullmatch(r"Bearer\s+\S+", token, flags=re.IGNORECASE):
+        return _response({"error": "Authentication required"}, 401)
+    headers = graphql_auth_headers(token or None)
+    if not token and "X-Internal-Secret" not in headers:
         return _response({"error": "Authentication required"}, 401)
     payload = request.get_json(silent=True)
     if not isinstance(payload, dict) or set(payload) != {"amount"}:
@@ -37,10 +42,13 @@ def create_gift_card():
         upstream = requests.post(
             os.getenv("SALEOR_GRAPHQL_URL", "http://localhost:8000/graphql/"),
             json={"query": MUTATION, "variables": {"amount": amount}},
-            headers={"Authorization": token},
+            headers=headers,
             timeout=10,
+            allow_redirects=False,
         )
         upstream.raise_for_status()
+        if upstream.status_code != 200:
+            raise ValueError("Invalid upstream response")
         data = upstream.json()
         result = data["data"]["createGiftCard"]
         errors = result["userErrors"]

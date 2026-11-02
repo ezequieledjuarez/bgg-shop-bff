@@ -1,4 +1,6 @@
-from flask import current_app, jsonify, request, g
+from uuid import UUID, uuid4
+
+from flask import current_app, jsonify, make_response, request, g
 
 from .. import auth
 from ..proxy import UpstreamError
@@ -6,14 +8,77 @@ from ..services import (
     admin_list_products as admin_list_products_service,
     admin_create_product as admin_create_product_service,
     admin_update_product as admin_update_product_service,
-    adjust_variant_stock as adjust_variant_stock_service,
+    adjust_product_stock as adjust_product_stock_service,
     get_product_by_bgg_id as get_product_by_bgg_id_service,
+    get_stock_movement_status as get_stock_movement_status_service,
 )
 from ..dtos.products import (
     AdminCreateProductDto,
     AdminUpdateProductDto,
     AdjustStockDto,
 )
+
+
+def _product_upstream_error(exc, allow_not_found=False):
+    public_errors = {
+        "NAME_REQUIRED": ("Name is required", "name"),
+        "INVALID_NAME": ("Invalid name", "name"),
+        "DUPLICATE": ("Product conflicts with existing data", None),
+        "NO_OP": ("At least one field must be provided", None),
+    }
+    if exc.user_error and isinstance(exc.code, str):
+        if exc.code in public_errors:
+            message, field = public_errors[exc.code]
+            error = {"code": exc.code, "message": message}
+            if field:
+                error["field"] = field
+            return jsonify({"errors": [error]}), 400
+        statuses = {
+            "UNAUTHENTICATED": (401, "Authentication required"),
+            "FORBIDDEN": (403, "forbidden"),
+        }
+        if allow_not_found:
+            statuses["PRODUCT_NOT_FOUND"] = (404, "Product not found")
+        if exc.code in statuses:
+            status, message = statuses[exc.code]
+            return jsonify({"error": message}), status
+    return jsonify({"error": "upstream GraphQL request failed"}), 502
+
+
+@auth.admin_required
+def generate_stock_movement_id():
+    response = jsonify({"movement_id": str(uuid4())})
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+@auth.admin_required
+def _get_stock_movement_status(movement_id):
+    try:
+        identifier = str(UUID(movement_id))
+    except (ValueError, TypeError, AttributeError):
+        return jsonify({"error": "Invalid movement identifier"}), 400
+    try:
+        return jsonify(get_stock_movement_status_service(identifier, request.headers.get("Authorization"))), 200
+    except UpstreamError as exc:
+        statuses = {"INVALID": 400, "UNAUTHENTICATED": 401, "FORBIDDEN": 403, "NOT_FOUND": 404}
+        status = statuses.get(exc.code, 502) if exc.user_error else 502
+        return jsonify({"error": "Stock status request failed"}), status
+
+
+def get_stock_movement_status(movement_id):
+    response = make_response(_get_stock_movement_status(movement_id))
+    response.headers["Cache-Control"] = "no-store"
+    if response.status_code != 200:
+        try:
+            identifier = str(UUID(movement_id))
+        except (ValueError, TypeError, AttributeError):
+            return response
+        payload = response.get_json(silent=True)
+        if isinstance(payload, dict):
+            payload["movement_id"] = identifier
+            response.set_data(current_app.json.dumps(payload))
+    return response
 
 
 @auth.admin_required
@@ -157,10 +222,7 @@ def admin_create_product():
     except ValueError:
         return jsonify({"error": "upstream GraphQL request failed"}), 502
     except UpstreamError as exc:
-        if exc.user_error:
-            err = {"field": exc.field, "code": exc.code, "message": str(exc)}
-            return jsonify({"errors": [err]}), 400
-        return jsonify({"error": "upstream GraphQL request failed"}), 502
+        return _product_upstream_error(exc)
 
 
 @auth.admin_required
@@ -191,132 +253,69 @@ def admin_update_product(product_id):
     except ValueError:
         return jsonify({"error": "upstream GraphQL request failed"}), 502
     except UpstreamError as exc:
-        if exc.user_error:
-            err = {"field": exc.field, "code": exc.code, "message": str(exc)}
-            return jsonify({"errors": [err]}), 400
-        return jsonify({"error": "upstream GraphQL request failed"}), 502
+        return _product_upstream_error(exc, allow_not_found=True)
 
 
 @auth.admin_required
-def admin_adjust_variant_stock(product_id, variant_id):
-    payload = request.get_json()
+def _admin_adjust_variant_stock(product_id):
+    payload = request.get_json(silent=True)
     try:
+        normalized_id = product_id.lstrip("0")
+        if (not product_id.isascii() or not product_id.isdecimal() or not normalized_id
+                or len(normalized_id) > 10 or int(normalized_id) > 2147483647):
+            raise ValueError("product_id must be a positive integer")
         dto = AdjustStockDto.from_payload(payload)
-        new_stock = dto.validate()
+        movement_id, direction, quantity = dto.validate()
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
     try:
         token = request.headers.get("Authorization")
-        op_key = request.headers.get("X-Op-Key") or request.headers.get("x-op-key")
-        # adjust_variant_stock_service accepts token only; pass op_key via token wrapper if needed
-        # prefer explicit token; otherwise pass None and rely on proxy to pick up op_key
-        if op_key and not token:
-            # pass op_key in place of token as a convention (proxy will prefer explicit op_key when provided)
-            result = adjust_variant_stock_service(product_id, variant_id, new_stock, None)
-        else:
-            result = adjust_variant_stock_service(product_id, variant_id, new_stock, token)
-        return jsonify(result), 200
+        result = adjust_product_stock_service(product_id, movement_id, direction, quantity, token)
+        return jsonify(result), 202 if result["status"] == "IN_PROGRESS" else 200
     except ValueError:
-        return jsonify({"error": "upstream GraphQL request failed"}), 502
+        return jsonify({"error": "Movement outcome may be uncertain. Refresh the screen and check the movement status."}), 502
     except UpstreamError as exc:
         if exc.user_error:
-            err = {"field": exc.field, "code": exc.code, "message": str(exc)}
-            return jsonify({"errors": [err]}), 400
-        return jsonify({"error": "upstream GraphQL request failed"}), 502
+            public_errors = {
+                "NOT_FOUND": (404, "Product not found"),
+                "INVALID": (400, "Invalid stock request"),
+                "UNAUTHENTICATED": (401, "Authentication required"),
+                "FORBIDDEN": (403, "forbidden"),
+                "NO_STOCK": (400, "Product has no stock"),
+                "IDEMPOTENCY_CONFLICT": (409, "Movement identifier already used with different data"),
+            }
+            if isinstance(exc.code, str) and exc.code in public_errors:
+                status, message = public_errors[exc.code]
+                return jsonify({"error": message}), status
+        return jsonify({"error": "Movement outcome may be uncertain. Refresh the screen and check the movement status."}), 502
+
+
+def admin_adjust_variant_stock(product_id):
+    response = make_response(_admin_adjust_variant_stock(product_id))
+    response.headers["Cache-Control"] = "no-store"
+    if response.status_code >= 400:
+        payload = request.get_json(silent=True)
+        try:
+            identifier = str(UUID(payload.get("movement_id"))) if isinstance(payload, dict) else None
+        except (ValueError, TypeError, AttributeError):
+            identifier = None
+        body = response.get_json(silent=True)
+        if identifier and isinstance(body, dict):
+            body["movement_id"] = identifier
+            response.set_data(current_app.json.dumps(body))
+    return response
 
 
 @auth.admin_required
 def admin_get_product(product_id):
-    """
-    Admin GET product by BGG id (fallback implementation for admin UI).
-    Performs a products listing with a larger page_size and searches for the
-    matching bgg_id. This is a pragmatic helper for the admin UI tests.
-    """
+    normalized_id = product_id.lstrip("0")
+    if (not product_id.isascii() or not product_id.isdecimal() or not normalized_id
+            or len(normalized_id) > 10 or int(normalized_id) > 2147483647):
+        return jsonify({"error": "product_id must be a positive integer"}), 400
     try:
         token = request.headers.get("Authorization")
-        # Quick local cache check: if the product was just created in this BFF
-        # process, consult the lightweight /tmp cache to avoid false 404s due
-        # to upstream indexing latency.
-        try:
-            import json, os
-            cache_path = '/tmp/bff-created-products.log'
-            if os.path.exists(cache_path):
-                with open(cache_path, 'r', encoding='utf-8') as fh:
-                    for line in fh:
-                        try:
-                            entry = json.loads(line)
-                        except Exception:
-                            continue
-                        if str(entry.get('bgg_id')) == str(product_id):
-                            # Attempt to fetch full product by bgg_id so admin UI gets
-                            # the fields it needs (price, quantity, etc.). This
-                            # avoids client-side validation failures when the
-                            # cache only contains a minimal record.
-                            try:
-                                # use the service wrapper to avoid circular import issues
-                                from .. import services as _services
-                                token = request.headers.get('Authorization')
-                                prod = _services.get_product_by_bgg_id(product_id, token)
-                                return jsonify(prod), 200
-                            except Exception:
-                                # Fallback: return a slightly richer minimal shape
-                                # with safe defaults so the edit form validation
-                                # doesn't block saving.
-                                return jsonify({'bgg_id': entry.get('bgg_id'), 'name': entry.get('name'), 'price': 0, 'quantity': 0}), 200
-        except Exception:
-            pass
-        # Prefer a direct GraphQL lookup by bggId (more efficient/robust if
-        # the upstream supports it). Fall back to paginated scanning if the
-        # direct field is unavailable or returns not found.
-        try:
-            product = get_product_by_bgg_id_service(product_id, token)
-            return jsonify(product), 200
-        except UpstreamError as exc:
-            # If the upstream explicitly reports not-found for direct query,
-            # fall back to the safer paginated scan. Otherwise propagate 502.
-            if getattr(exc, 'code', None) != 'PRODUCT_NOT_FOUND':
-                raise
-        # Fallback: iterate pages to find the requested bgg_id.
-        def scan_for_product():
-            page = 1
-            page_size = 200
-            max_pages = 10
-            while page <= max_pages:
-                result = admin_list_products_service(page=page, page_size=page_size, token=token)
-                items = result.get("items") if isinstance(result, dict) else []
-                for item in items:
-                    if str(item.get("bgg_id")) == str(product_id):
-                        return item
-                try:
-                    total_pages = int(result.get('total_pages') or 0)
-                    if total_pages and page >= total_pages:
-                        break
-                except Exception:
-                    pass
-                page += 1
-            return None
-
-        found = scan_for_product()
-        if found:
-            return jsonify(found), 200
-
-        # If not found, allow a small number of short retries to account for
-        # upstream eventual consistency (indexing) before returning 404.
-        import time
-        retries = 3
-        delay = 0.2
-        for attempt in range(retries):
-            time.sleep(delay)
-            # try direct lookup first
-            try:
-                product = get_product_by_bgg_id_service(product_id, token)
-                return jsonify(product), 200
-            except UpstreamError:
-                # fall back to scanning again
-                found = scan_for_product()
-                if found:
-                    return jsonify(found), 200
-
-        return jsonify({"error": "product not found"}), 404
-    except UpstreamError:
+        return jsonify(get_product_by_bgg_id_service(product_id, token)), 200
+    except UpstreamError as exc:
+        if exc.code == "PRODUCT_NOT_FOUND":
+            return jsonify({"error": "product not found"}), 404
         return jsonify({"error": "upstream GraphQL request failed"}), 502

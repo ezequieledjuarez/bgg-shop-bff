@@ -6,7 +6,7 @@ description: "Retrospective task list for CU-C01 in the BFF"
 
 **Input**: [`spec.md`](./spec.md) and [`plan.md`](./plan.md)
 **Prerequisites**: plan.md and spec.md
-**Retrospective status**: All listed implementation tasks are checked complete based on the ODD record; this file does not independently verify past implementation.
+**Retrospective status**: Closed; implemented and validated with scope limitations (2026-10-30). Browser behavior and live Core persistence remain outside this BFF-only validation.
 
 ## Format: `[ID] [P?] [Story] Description`
 
@@ -103,6 +103,7 @@ No parallel task execution is inferred. Keep the existing OpenAPI contract and C
 - `python -m pytest` — 19 passed.
 - `python -m compileall -q app.py src tests` — passed.
 - `git diff --check` — passed.
+- On 2026-10-30, `python -m pytest -q -p no:cacheprovider tests/test_auth.py tests/test_cart.py --tb=short` — 31 passed, 28 warnings; dependencies were simulated.
 
 ## Pending Verification
 

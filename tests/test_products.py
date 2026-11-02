@@ -1,7 +1,9 @@
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from app import app
-from src.proxy import UpstreamError, get_product_detail, list_products
+from src.proxy import UpstreamError, get_product_detail, list_product_categories, list_products
 
 
 def test_products_returns_rest_contract():
@@ -16,9 +18,52 @@ def test_products_returns_rest_contract():
     assert response.get_json()["items"][0]["category"] == ["Strategy"]
     list_products.assert_called_once_with(
         page="1", page_size="20", search=None, year_published=None,
-        min_players=None, max_players=None, category_id=None,
+        min_players=None, max_players=None, category_id=None, category_name=None,
         price_min=None, price_max=None,
     )
+
+
+def test_product_categories_returns_dynamic_core_categories():
+    with patch("app.list_product_categories", return_value=["Juegos Party", "Nueva categoría"]):
+        response = app.test_client().get("/api/v1/product-categories")
+
+    assert response.status_code == 200
+    assert response.get_json() == ["Juegos Party", "Nueva categoría"]
+
+
+def test_product_categories_hides_upstream_failure_details():
+    with patch("app.list_product_categories", side_effect=UpstreamError("private upstream detail")):
+        response = app.test_client().get("/api/v1/product-categories")
+
+    assert response.status_code == 502
+    assert b"private upstream detail" not in response.data
+
+
+def test_product_categories_proxy_queries_core():
+    with patch("src.proxy._graphql_request", return_value={"data": {"productCategories": ["Juegos Party"]}}) as request:
+        assert list_product_categories() == ["Juegos Party"]
+
+    assert "productCategories" in request.call_args.args[0]
+
+
+@pytest.mark.parametrize("payload", [
+    {"errors": [{"message": "private detail"}]},
+    {"data": {"productCategories": [None]}},
+    {"data": {"productCategories": "Juegos Party"}},
+])
+def test_product_categories_proxy_rejects_invalid_payload(payload):
+    with patch("src.proxy._graphql_request", return_value=payload), pytest.raises(UpstreamError):
+        list_product_categories()
+
+
+def test_products_forwards_dynamic_category_name():
+    with patch("app.list_products", return_value={
+        "items": [], "page": 1, "page_size": 20, "total": 0, "total_pages": 0,
+    }) as list_products_service:
+        response = app.test_client().get("/api/v1/products?category_name=Juegos%20Party")
+
+    assert response.status_code == 200
+    assert list_products_service.call_args.kwargs["category_name"] == "Juegos Party"
 
 
 def test_products_allows_frontend_origin():
@@ -80,7 +125,7 @@ def test_products_forwards_all_rest_filters():
     assert response.status_code == 200
     list_products.assert_called_once_with(
         page=1, page_size=20, search="game", year_published="2020",
-        min_players="2", max_players="4", category_id="1",
+        min_players="2", max_players="4", category_id="1", category_name=None,
         price_min="10", price_max="20",
     )
 
@@ -124,6 +169,7 @@ def test_graphql_response_is_mapped_to_rest_contract():
             min_players=2,
             max_players=4,
             category_id=1,
+            category_name="Juegos Party",
             price_min=10,
             price_max=20,
         )
@@ -138,6 +184,7 @@ def test_graphql_response_is_mapped_to_rest_contract():
     assert payload["variables"]["minPlayers"] == 2
     assert payload["variables"]["maxPlayers"] == 4
     assert payload["variables"]["categoryId"] == 1
+    assert payload["variables"]["categoryName"] == "Juegos Party"
     assert payload["variables"]["priceMin"] == 10
     assert payload["variables"]["priceMax"] == 20
 

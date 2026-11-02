@@ -360,9 +360,10 @@ def test_opkey_middleware_remains_active_for_existing_routes():
 
 
 @pytest.mark.parametrize("status", [200, 403])
-def test_opkey_validation_does_not_log_credentials_or_provider_response(status, capsys, caplog):
+def test_opkey_validation_does_not_log_credentials_or_provider_response(status, capsys, caplog, monkeypatch):
     from src.opkey_middleware import validate_op_key_with_core
 
+    monkeypatch.setenv("OPKEY_INTERNAL_SECRET", "synthetic-internal-secret-0123456789-abcdef")
     key = "synthetic-private-opkey"
     path = "/private/synthetic-path-secret"
     private_response = "synthetic-private-upstream-response"
@@ -379,14 +380,16 @@ def test_opkey_validation_does_not_log_credentials_or_provider_response(status, 
     file_open.assert_not_called()
 
 
-def test_opkey_validation_timeout_fails_closed_without_logging(capsys, caplog):
+def test_opkey_validation_timeout_fails_closed_without_logging(capsys, caplog, monkeypatch):
     from src.opkey_middleware import validate_op_key_with_core
 
+    monkeypatch.setenv("OPKEY_INTERNAL_SECRET", "synthetic-internal-secret-0123456789-abcdef")
     secret = "synthetic-private-timeout"
-    with patch("src.opkey_middleware.requests.post", side_effect=requests.Timeout(secret)), \
+    with patch("src.opkey_middleware.requests.post", side_effect=requests.Timeout(secret)) as post, \
             patch("builtins.open", create=True) as file_open:
         result = validate_op_key_with_core("synthetic-key", "/private/path", "POST")
     assert result is None
+    post.assert_called_once()
     captured = capsys.readouterr()
     assert secret not in captured.out + captured.err + caplog.text
     file_open.assert_not_called()

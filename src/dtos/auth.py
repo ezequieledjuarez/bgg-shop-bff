@@ -34,13 +34,20 @@ class SessionDto:
     access_token: str | None
     refresh_token: str | None
     csrf_token: str | None
+    op_key: str | None = None
+    op_key_expires_at: str | None = None
+    ops: list[str] | None = None
 
     @classmethod
     def from_dict(cls, value: dict[str, Any]) -> "SessionDto":
         return cls(**value)
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        result = asdict(self)
+        for field in ("op_key", "op_key_expires_at", "ops"):
+            if result[field] is None:
+                del result[field]
+        return result
 
 
 @dataclass(frozen=True)

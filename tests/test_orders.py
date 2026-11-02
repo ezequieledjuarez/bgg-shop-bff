@@ -54,7 +54,8 @@ def test_graphql_proxy_never_logs_headers_variables_or_upstream_details(failure,
         else:
             _graphql_request("query Example { result }", {"address": private_value}, token)
         assert post.call_args.kwargs["headers"]["Authorization"] == token
-        assert post.call_args.kwargs["headers"]["X-Op-Key"] == op_key
+        assert "X-Op-Key" not in post.call_args.kwargs["headers"]
+        assert "X-Internal-Secret" not in post.call_args.kwargs["headers"]
     captured = capsys.readouterr()
     logs = captured.out + captured.err + caplog.text + str(file_open.mock_calls)
     for secret in (token, op_key, private_value):
@@ -372,6 +373,8 @@ def test_checkout_proxy_uses_core_contract_maps_order_and_forwards_bearer():
     assert post.call_args.kwargs["json"]["variables"] == {
         "shippingMode": "STANDARD",
         "address": {"recipient": "Buyer", "street": "1 Main St", "city": "Buenos Aires", "postalCode": "1000", "phone": None},
+        "checkoutKey": None,
+        "couponCode": None,
     }
     assert "checkout" in post.call_args.kwargs["json"]["query"]
 

@@ -4,6 +4,8 @@ import pytest
 import requests
 from werkzeug.exceptions import HTTPException
 
+from flask import g
+
 from app import app
 
 
@@ -50,6 +52,21 @@ def test_admin_issuance_forwards_bearer_without_logging_secrets(capsys):
     captured = capsys.readouterr()
     assert TOKEN not in captured.out + captured.err
     assert CARD["code"] not in captured.out + captured.err
+
+
+def test_admin_issuance_accepts_validated_optional_operation_key(monkeypatch):
+    secret = "synthetic-internal-secret-0123456789-abcdef"
+    monkeypatch.setenv("OPKEY_INTERNAL_SECRET", secret)
+    payload = {"data": {"createGiftCard": {"giftCard": CARD, "userErrors": []}}}
+    with patch("app._opkey_before_request", side_effect=lambda: setattr(g, "op_session_valid", True)), \
+            patch("src.controllers.admin_gift_cards_controller.requests.post", return_value=response(payload)) as post:
+        result = app.test_client().post(PATH, json={"amount": "20000.00"}, headers={"X-Op-Key": "synthetic-op-key"})
+    assert result.status_code == 201
+    assert post.call_args.kwargs["headers"] == {
+        "X-Op-Key": "synthetic-op-key", "X-Internal-Secret": secret,
+        "X-Op-Method": "POST", "X-Op-Path": PATH,
+    }
+    assert post.call_args.kwargs["allow_redirects"] is False
 
 
 @pytest.mark.parametrize("path", ["/api/v1/credit", "/api/v1/gift-cards/redeem", "/api/v1/checkout/credit"])

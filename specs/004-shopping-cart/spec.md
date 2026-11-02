@@ -1,7 +1,7 @@
 # BFF Functional Specification: Shopping Cart (As-Built)
 
 **Input**: CU-C04
-**Status**: As-built / retrospective
+**Status**: Closed for the local scope with limitations on 2026-10-30; see the [canonical spec](../../../specs/004-shopping-cart-as-built/spec.md).
 **Scope**: BFF cart REST behavior, identity transport, and mapping to Core cart operations. The end-to-end buyer behavior is in the [canonical CU-C04 specification](../../../specs/004-shopping-cart-as-built/spec.md).
 
 ## BFF responsibilities

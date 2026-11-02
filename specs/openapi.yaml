@@ -3,8 +3,55 @@ info:
   title: BGG Shop BFF API
   version: 1.0.0
   description: REST API exposed by the BFF for the board-game catalog, shopping cart,
-    and purchase orders.
+    and purchase orders. Administrative operations require an active authenticated
+    user with is_staff or is_superuser; an operation key alone does not grant admin
+    access. These contracts do not establish runtime conformance.
 paths:
+  /internal/v1/catalog-events:
+    post:
+      tags:
+      - Internal Events
+      summary: Invalidate public catalog caches from Core
+      description: >-
+        Accepts a minimal versioned catalog event authenticated by an HMAC-SHA256
+        signature over the exact request body. This internal endpoint does not
+        accept product, customer, or payment payloads.
+      operationId: receiveCatalogEvent
+      parameters:
+      - name: X-Catalog-Event-Signature
+        in: header
+        required: true
+        description: HMAC-SHA256 of the exact request body, prefixed with sha256=.
+        schema:
+          type: string
+          pattern: '^sha256=[0-9a-f]{64}$'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CatalogEvent'
+      responses:
+        '204':
+          description: Event accepted and public catalog cache generation advanced.
+        '400':
+          description: Event envelope is invalid.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Signature is missing or invalid.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: Shared-secret configuration or cache invalidation is unavailable.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /api/v1/auth/register:
     post:
       tags:
@@ -69,6 +116,13 @@ paths:
           description: Customer authenticated successfully; the guest cart cookie
             is cleared after the Core merges it.
           headers:
+            Cache-Control:
+              required: true
+              description: Prevents caching of session credentials.
+              schema:
+                type: string
+                enum:
+                - no-store
             Set-Cookie:
               description: Clears the guest cart cookie after successful login.
               schema:
@@ -100,6 +154,32 @@ paths:
       - {}
       - BearerAuth: []
       - XOpKey: []
+  /api/v1/auth/logout:
+    post:
+      tags:
+      - Authentication
+      summary: End the local session and revoke an optional operation key
+      description: >-
+        When X-Op-Key is supplied, revokes that key in Core. Without a key,
+        clears the refresh cookie. Existing JWT access tokens are not revoked.
+      operationId: logoutAccount
+      security:
+      - {}
+      parameters:
+      - name: X-Op-Key
+        in: header
+        required: false
+        schema:
+          type: string
+      responses:
+        '204':
+          description: The key is revoked or no key was supplied; the refresh cookie is cleared.
+        '502':
+          description: The BFF could not confirm operation-key revocation.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /api/v1/auth/refresh:
     post:
       tags:
@@ -148,6 +228,27 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/AuthRefreshErrorResponse'
+  /api/v1/product-categories:
+    get:
+      tags:
+      - Products
+      summary: List available product category names
+      operationId: listProductCategories
+      responses:
+        '200':
+          description: Distinct category names from the catalog.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: string
+        '502':
+          description: Core is unavailable or returned an invalid response.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /api/v1/products:
     get:
       tags:
@@ -163,6 +264,7 @@ paths:
       - $ref: '#/components/parameters/MinPlayers'
       - $ref: '#/components/parameters/MaxPlayers'
       - $ref: '#/components/parameters/CategoryId'
+      - $ref: '#/components/parameters/CategoryName'
       - $ref: '#/components/parameters/PriceMin'
       - $ref: '#/components/parameters/PriceMax'
       responses:
@@ -214,6 +316,50 @@ paths:
       - {}
       - BearerAuth: []
       - XOpKey: []
+  /api/v1/coupons:
+    get:
+      tags:
+      - Coupons
+      summary: List available coupons
+      description: >-
+        Lists active coupons with remaining uses and configured validity dates
+        containing the current time. This public read does not consume or
+        reserve coupon uses. It does not guarantee availability at payment.
+      operationId: listAvailableCoupons
+      security:
+      - {}
+      responses:
+        '200':
+          description: Available coupons.
+          headers:
+            Cache-Control:
+              required: true
+              schema:
+                type: string
+                enum: [no-store]
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  additionalProperties: false
+                  required: [code, starts_at, ends_at]
+                  properties:
+                    code:
+                      type: string
+                    starts_at:
+                      type: string
+                      format: date-time
+                    ends_at:
+                      type: string
+                      format: date-time
+        '502':
+          description: The coupon service could not be reached or returned invalid data.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /api/v1/cart:
     get:
       tags:
@@ -483,7 +629,6 @@ paths:
       operationId: createGameReview
       security:
       - BearerAuth: []
-      - XOpKey: []
       parameters:
       - name: slug
         in: path
@@ -509,32 +654,32 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ErrorResponse'
+                $ref: '#/components/schemas/ReviewErrorResponse'
         '401':
           description: Authentication is required.
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ErrorResponse'
+                $ref: '#/components/schemas/ReviewErrorResponse'
         '404':
           description: The game does not exist.
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ErrorResponse'
+                $ref: '#/components/schemas/ReviewErrorResponse'
         '409':
           description: The user already reviewed this game.
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ErrorResponse'
+                $ref: '#/components/schemas/ReviewErrorResponse'
         '502':
           description: The BFF could not obtain a valid response from the Core GraphQL
             service.
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/AuthErrorResponse'
+                $ref: '#/components/schemas/ReviewErrorResponse'
               example:
                 errors:
                 - code: UPSTREAM_ERROR
@@ -838,9 +983,26 @@ paths:
       - Orders
       summary: Create an order and initialize checkout payment
       operationId: checkout
+      description: >-
+        A supplied coupon_code is matched exactly and its use is reserved
+        atomically as part of checkout. A confirmed failure or cancellation
+        releases that reservation. An uncertain payment outcome retains it
+        while Core reconciles with the provider; unresolved outcomes require
+        manual review. A timeout alone never releases a reservation. Coupon
+        checkout requires X-Op-Key as its idempotency key, which identifies the
+        checkout operation: retrying the same key and payload replays its order without reserving
+        another use; reusing the key with a different payload conflicts.
       security:
       - BearerAuth: []
-      - XOpKey: []
+      parameters:
+      - name: X-Op-Key
+        in: header
+        required: false
+        description: Required when coupon_code is supplied; identifies the checkout operation for safe retries.
+        schema:
+          type: string
+          minLength: 1
+          maxLength: 512
       requestBody:
         required: true
         content:
@@ -867,13 +1029,19 @@ paths:
               schema:
                 $ref: '#/components/schemas/OrderErrorResponse'
         '409':
-          description: Current cart contents exceed available stock.
+          description: Current cart contents exceed available stock, the checkout key conflicts with a prior payload, or the original payment attempt still requires reconciliation.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/OrderErrorResponse'
         '422':
-          description: Cart is empty or the order cannot be paid.
+          description: Cart is empty, the order cannot be paid, or the coupon is ineligible; the response includes a reason.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrderErrorResponse'
+        '404':
+          description: No coupon exists with the exact supplied code.
           content:
             application/json:
               schema:
@@ -1146,6 +1314,815 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+  /api/v1/admin/products:
+    get:
+      tags:
+      - Administration
+      summary: List and filter products for administration
+      description: >-
+        Proposed contract for the existing administrative product listing.
+        Core is authoritative for product data. The implementation must return
+        a sanitized error when Core fails rather than a successful empty page.
+        Contract alignment remains to be verified. Requires an active authenticated
+        user with is_staff or is_superuser.
+      operationId: adminListProducts
+      x-implementation-status: planned
+      security:
+      - BearerAuth: []
+      parameters:
+      - $ref: '#/components/parameters/Page'
+      - $ref: '#/components/parameters/PageSize'
+      - $ref: '#/components/parameters/Search'
+      - $ref: '#/components/parameters/YearPublished'
+      - $ref: '#/components/parameters/MinPlayers'
+      - $ref: '#/components/parameters/MaxPlayers'
+      - $ref: '#/components/parameters/CategoryId'
+      - $ref: '#/components/parameters/PriceMin'
+      - $ref: '#/components/parameters/PriceMax'
+      responses:
+        '200':
+          description: Paginated administrative product collection.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminProductPage'
+        '400':
+          description: Invalid pagination or filter parameters.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminErrorResponse'
+        '401':
+          description: Authentication is required.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminErrorResponse'
+        '403':
+          description: Administrative permission is required.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminErrorResponse'
+        '502':
+          description: Core is unavailable or returned an invalid response.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminErrorResponse'
+    post:
+      tags:
+      - Administration
+      summary: Create a product
+      description: >-
+        Proposed contract; implementation remains to be verified. Requires an
+        active authenticated user with is_staff or is_superuser.
+      operationId: adminCreateProduct
+      x-implementation-status: planned
+      security:
+      - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminCreateProductRequest'
+      responses:
+        '201':
+          description: Product created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminProductSummary'
+        '400':
+          $ref: '#/components/responses/AdminInvalidRequest'
+        '401':
+          $ref: '#/components/responses/AdminUnauthorized'
+        '403':
+          $ref: '#/components/responses/AdminForbidden'
+        '502':
+          $ref: '#/components/responses/AdminUpstreamFailure'
+  /api/v1/admin/products/{product_id}:
+    parameters:
+    - name: product_id
+      in: path
+      required: true
+      description: BoardGameGeek product identifier.
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 2147483647
+    get:
+      tags:
+      - Administration
+      summary: Get an administrative product
+      description: >-
+        Reads the exact product from Core by BGG identifier. An incomplete or
+        failed upstream response is not returned as a successful product.
+        Requires an active staff or superuser account.
+      operationId: adminGetProduct
+      x-implementation-status: planned
+      security:
+      - BearerAuth: []
+      responses:
+        '200':
+          description: Product details.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Product'
+        '400':
+          $ref: '#/components/responses/AdminInvalidRequest'
+        '401':
+          $ref: '#/components/responses/AdminUnauthorized'
+        '403':
+          $ref: '#/components/responses/AdminForbidden'
+        '404':
+          $ref: '#/components/responses/AdminNotFound'
+        '502':
+          $ref: '#/components/responses/AdminUpstreamFailure'
+    put:
+      tags:
+      - Administration
+      summary: Update a product
+      description: >-
+        Proposed contract for a partial update. Stock is set at creation and
+        subsequently changed through inventory operations; quantity is not an
+        editable product field. Updates cannot change the BGG ID. Price must be
+        greater than zero, and an image change supplies exactly one .webp URL
+        or path/filename. Requires an active authenticated user with is_staff
+        or is_superuser. Runtime conformance remains to be verified.
+      operationId: adminUpdateProduct
+      x-implementation-status: planned
+      security:
+      - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminUpdateProductRequest'
+      responses:
+        '200':
+          description: Product updated.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminProductSummary'
+        '400':
+          $ref: '#/components/responses/AdminInvalidRequest'
+        '401':
+          $ref: '#/components/responses/AdminUnauthorized'
+        '403':
+          $ref: '#/components/responses/AdminForbidden'
+        '404':
+          $ref: '#/components/responses/AdminNotFound'
+        '502':
+          $ref: '#/components/responses/AdminUpstreamFailure'
+  /api/v1/admin/products/{product_id}/stock:
+    post:
+      tags:
+      - Administration
+      summary: Adjust product stock
+      description: >-
+        UUID-bound IN/OUT movement. A provisional IN_PROGRESS record
+        precedes the atomic stock, audit and final-result commit. A completed
+        retry returns its original result; a retry with the same data resumes
+        an unfinished movement without applying it twice, even after a long
+        delay. A UUID reused for different product, direction or quantity is
+        rejected. OUT is partial-to-zero when requested quantity exceeds
+        available stock, with requested and applied quantities in the result.
+        Successful movement identifiers do not expire. After an interrupted
+        connection, refreshing stock alone does not confirm a movement outcome.
+        A failed, rejected or no-change operation may be retried indefinitely
+        with the same exact payload and UUID; an HTTP error or timeout alone
+        does not confirm that stock rolled back.
+        Requires an active staff or superuser account.
+      operationId: adminAdjustProductStock
+      security:
+      - BearerAuth: []
+      parameters:
+      - name: product_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 2147483647
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminAdjustStockRequest'
+      responses:
+        '200':
+          description: Applied movement or its original result on retry.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminStockMovementResult'
+        '202':
+          description: Another attempt is executing the same movement; check its status or retry with the same data.
+          content:
+            application/json:
+              schema:
+                allOf:
+                - $ref: '#/components/schemas/AdminStockMovementStatus'
+                - type: object
+                  properties:
+                    status:
+                      type: string
+                      enum:
+                      - IN_PROGRESS
+        '400':
+          $ref: '#/components/responses/AdminStockMovementRequestError'
+        '401':
+          $ref: '#/components/responses/AdminStockMovementRequestError'
+        '403':
+          $ref: '#/components/responses/AdminStockMovementRequestError'
+        '404':
+          $ref: '#/components/responses/AdminStockMovementRequestError'
+        '409':
+          description: UUID reused with different movement data.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminStockMovementError'
+        '502':
+          $ref: '#/components/responses/AdminStockMovementRequestError'
+  /api/v1/admin/stock-movement-ids:
+    post:
+      tags:
+      - Administration
+      summary: Generate a stock movement UUID
+      description: >-
+        Generates an identifier before a stock movement is submitted. This
+        operation does not create a movement or change inventory. The
+        stock movement endpoint accepts this identifier. Requires an active
+        authenticated user with is_staff or is_superuser.
+      operationId: adminGenerateStockMovementId
+      security:
+      - BearerAuth: []
+      responses:
+        '200':
+          description: A new stock movement UUID.
+          headers:
+            Cache-Control:
+              required: true
+              schema:
+                type: string
+                enum:
+                - no-store
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminStockMovementId'
+        '401':
+          $ref: '#/components/responses/AdminUnauthorized'
+        '403':
+          $ref: '#/components/responses/AdminForbidden'
+        '502':
+          $ref: '#/components/responses/AdminUpstreamFailure'
+  /api/v1/admin/stock-movements/{movement_id}:
+    get:
+      tags:
+      - Administration
+      summary: Get stock movement status
+      description: >-
+        Lookup by the UUID generated before a movement. A missing
+        record does not prove that a movement was rejected or rolled back.
+        Requires an active authenticated user with is_staff or is_superuser.
+      operationId: adminGetStockMovementStatus
+      security:
+      - BearerAuth: []
+      parameters:
+      - name: movement_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '200':
+          description: Current recorded status of the movement.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminStockMovementStatus'
+        '400':
+          description: Invalid movement UUID.
+        '401':
+          description: Authentication is required.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminStockMovementError'
+        '403':
+          description: Administrative permission is required.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminStockMovementError'
+        '404':
+          description: No movement record is available for this UUID; its outcome is not established.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminStockMovementError'
+        '502':
+          description: The movement status could not be retrieved from Core.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminStockMovementError'
+  /api/v1/admin/promotions:
+    get:
+      tags:
+      - Administration
+      summary: List promotions
+      description: >-
+        Lists admin store promotions, including global offers, and excludes
+        coupon-linked promotion rows. A product-specific eligible promotion
+        wins for its product even when a global percentage is higher; otherwise
+        the highest eligible global percentage applies. Promotions never
+        stack. Product-specific promotions retain at most one active offer per
+        product. Requires an active authenticated user with is_staff or
+        is_superuser. Runtime conformance remains to be verified.
+      operationId: adminListPromotions
+      x-implementation-status: planned
+      security:
+      - BearerAuth: []
+      responses:
+        '200':
+          description: Promotion collection.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/AdminPromotion'
+        '401':
+          $ref: '#/components/responses/AdminUnauthorized'
+        '403':
+          $ref: '#/components/responses/AdminForbidden'
+        '502':
+          $ref: '#/components/responses/AdminUpstreamFailure'
+    post:
+      tags:
+      - Administration
+      summary: Create a promotion
+      description: >-
+        Proposed contract for the existing basic adapter. Percentage discounts
+        range from zero through 50, inclusive. The optional nullable
+        product_bgg_id creates a global store offer when omitted or null.
+        Product-specific eligible offers take precedence over global offers;
+        otherwise the highest eligible global percentage applies. Offers do
+        not stack, and coupon-linked rows are not store promotions. Requires an
+        active authenticated user with is_staff or is_superuser. Runtime
+        conformance remains to be verified.
+      operationId: adminCreatePromotion
+      x-implementation-status: planned
+      security:
+      - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminCreatePromotionRequest'
+      responses:
+        '201':
+          description: Promotion created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminPromotionSummary'
+        '400':
+          $ref: '#/components/responses/AdminInvalidRequest'
+        '401':
+          $ref: '#/components/responses/AdminUnauthorized'
+        '403':
+          $ref: '#/components/responses/AdminForbidden'
+        '502':
+          $ref: '#/components/responses/AdminUpstreamFailure'
+  /api/v1/admin/promotions/{promotion_id}:
+    put:
+      tags:
+      - Administration
+      summary: Update a promotion
+      description: >-
+        Updates a promotion partially; explicitly setting product_bgg_id to
+        null clears its product link and makes it a global store offer.
+        Product-specific eligible offers take precedence over global offers;
+        otherwise the highest eligible global percentage applies. Offers do
+        not stack, and coupon-linked rows are not store promotions.
+        Product-specific promotions retain at most one active offer per
+        product. Requires an active authenticated user with is_staff or
+        is_superuser.
+      operationId: adminUpdatePromotion
+      x-implementation-status: planned
+      security:
+      - BearerAuth: []
+      parameters:
+      - name: promotion_id
+        in: path
+        required: true
+        schema:
+          type: string
+          minLength: 1
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminUpdatePromotionRequest'
+      responses:
+        '200':
+          description: Promotion updated.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminPromotionSummary'
+        '400':
+          $ref: '#/components/responses/AdminInvalidRequest'
+        '401':
+          $ref: '#/components/responses/AdminUnauthorized'
+        '403':
+          $ref: '#/components/responses/AdminForbidden'
+        '404':
+          $ref: '#/components/responses/AdminNotFound'
+        '502':
+          $ref: '#/components/responses/AdminUpstreamFailure'
+  /api/v1/admin/coupons:
+    get:
+      tags:
+      - Administration
+      summary: List administrative coupons
+      description: >-
+        Returns coupons with their percentage flattened from the associated
+        product-less promotion. Codes are exact-case and are not normalized.
+        Requires an active staff or superuser account.
+      operationId: adminListCoupons
+      x-implementation-status: planned
+      security:
+      - BearerAuth: []
+      responses:
+        '200':
+          description: Coupon collection.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/AdminCoupon'
+        '401':
+          $ref: '#/components/responses/AdminUnauthorized'
+        '403':
+          $ref: '#/components/responses/AdminForbidden'
+        '502':
+          $ref: '#/components/responses/AdminCouponFailure'
+    post:
+      tags:
+      - Administration
+      summary: Create an administrative coupon
+      description: >-
+        Creates a coupon and its product-less promotion. The promotion stores
+        the whole-purchase discount percentage; coupon state and validity remain
+        on the coupon. The coupon and its audit entry, including actor, action,
+        target, previous values, and new values, commit atomically. Credentials
+        are never written to audit history. Requires an active staff or
+        superuser account.
+      operationId: adminCreateCoupon
+      x-implementation-status: planned
+      security:
+      - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminCreateCouponRequest'
+      responses:
+        '201':
+          description: Coupon created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminCoupon'
+        '400':
+          $ref: '#/components/responses/AdminInvalidRequest'
+        '401':
+          $ref: '#/components/responses/AdminUnauthorized'
+        '403':
+          $ref: '#/components/responses/AdminForbidden'
+        '409':
+          $ref: '#/components/responses/AdminConflict'
+        '502':
+          $ref: '#/components/responses/AdminCouponFailure'
+  /api/v1/admin/coupons/{coupon_id}:
+    patch:
+      tags:
+      - Administration
+      summary: Partially update an administrative coupon
+      description: >-
+        Applies only supplied fields; code is immutable and no physical-delete
+        operation exists, so coupons are deactivated through active=false.
+        Discount changes update the associated product-less promotion. The
+        coupon, promotion update, and audit entry containing actor, action,
+        target, previous values, and new values commit atomically. Credentials
+        are never written to audit history. Requires an active staff or
+        superuser account.
+      operationId: adminUpdateCoupon
+      x-implementation-status: planned
+      security:
+      - BearerAuth: []
+      parameters:
+      - name: coupon_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          minimum: 1
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminUpdateCouponRequest'
+      responses:
+        '200':
+          description: Coupon updated.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminCoupon'
+        '400':
+          $ref: '#/components/responses/AdminInvalidRequest'
+        '401':
+          $ref: '#/components/responses/AdminUnauthorized'
+        '403':
+          $ref: '#/components/responses/AdminForbidden'
+        '404':
+          $ref: '#/components/responses/AdminNotFound'
+        '502':
+          $ref: '#/components/responses/AdminCouponFailure'
+  /api/v1/admin/audit:
+    get:
+      tags:
+      - Administration
+      summary: List administrative audit records
+      description: >-
+        Returns product, stock, promotion, and coupon audit records ordered by
+        created_at DESC, id DESC using opaque signed cursor pagination. All
+        filters are optional exact matches except the inclusive UTC date range.
+        Date-times must include a timezone designator and are normalized to UTC.
+        Values stored under keys naming credentials, tokens, passwords, secrets,
+        authorization data, or payment/card data are replaced with "[REDACTED]"
+        before the response is returned. Responses are not cacheable. Requires
+        an active staff or superuser account.
+      operationId: adminListAuditRecords
+      x-implementation-status: planned
+      security:
+      - BearerAuth: []
+      parameters:
+      - name: entity_type
+        in: query
+        required: false
+        description: Exact entity type, such as product_boardgame, promotion, or coupon.
+        schema:
+          type: string
+          minLength: 1
+          maxLength: 150
+      - name: entity_id
+        in: query
+        required: false
+        description: Exact entity identifier.
+        schema:
+          type: string
+          minLength: 1
+          maxLength: 64
+      - name: actor_id
+        in: query
+        required: false
+        description: Exact administrator identifier.
+        schema:
+          type: string
+          minLength: 1
+          maxLength: 150
+      - name: action
+        in: query
+        required: false
+        description: Exact action, such as product_created, stock_in, promotion_updated, or coupon_created.
+        schema:
+          type: string
+          minLength: 1
+          maxLength: 100
+      - name: created_from
+        in: query
+        required: false
+        description: Inclusive lower bound; a timezone designator is required.
+        schema:
+          type: string
+          format: date-time
+      - name: created_to
+        in: query
+        required: false
+        description: Inclusive upper bound; a timezone designator is required and must not precede created_from.
+        schema:
+          type: string
+          format: date-time
+      - name: cursor
+        in: query
+        required: false
+        description: Opaque cursor copied unchanged from next_cursor.
+        schema:
+          type: string
+          minLength: 1
+          maxLength: 512
+      - name: limit
+        in: query
+        required: false
+        description: Maximum records per page.
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 100
+          default: 50
+      responses:
+        '200':
+          description: Audit page.
+          headers:
+            Cache-Control:
+              required: true
+              schema:
+                type: string
+                enum:
+                - no-store
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminAuditPage'
+        '400':
+          $ref: '#/components/responses/AdminInvalidRequest'
+        '401':
+          $ref: '#/components/responses/AdminUnauthorized'
+        '403':
+          $ref: '#/components/responses/AdminForbidden'
+        '502':
+          $ref: '#/components/responses/AdminUpstreamFailure'
+  /api/v1/cart/coupons/preview:
+    post:
+      tags:
+      - Cart
+      summary: Preview a coupon against the authenticated user's current cart
+      description: >-
+        This read-only preview uses the authenticated user's current cart and
+        does not reserve or consume a coupon use. Coupon codes are matched by
+        exact, case-sensitive equality, without normalization. Inactive,
+        not-yet-valid, expired, exhausted or over-limit coupons return a
+        rejected preview with a reason; a missing coupon returns 404.
+        Validity timestamps are UTC; the start is inclusive and the end is
+        exclusive, and if both are configured the start must precede the end.
+        Preserve decimal precision while calculating each alternative, then
+        round each total upward once to whole pesos. Select the greater saving;
+        ties favor the store promotion.
+        A discount above 50% of the undiscounted cart subtotal is rejected, not
+        capped. Runtime behavior is not established by this contract.
+      operationId: previewCartCoupon
+      x-implementation-status: planned
+      security:
+      - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CouponPreviewRequest'
+      responses:
+        '200':
+          description: Read-only coupon estimate for the current cart.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CouponPreviewResponse'
+        '400':
+          $ref: '#/components/responses/AdminInvalidRequest'
+        '401':
+          $ref: '#/components/responses/AdminUnauthorized'
+        '404':
+          description: No coupon exists with the exact supplied code.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminErrorResponse'
+        '502':
+          $ref: '#/components/responses/AdminUpstreamFailure'
+  /api/v1/admin/op-sessions:
+    get:
+      tags:
+      - Administration
+      summary: List operation-key sessions
+      operationId: adminListOperationSessions
+      security:
+      - BearerAuth: []
+      - XOpKey: []
+      parameters:
+      - name: user_id
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 1
+      - name: page
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 10000
+          default: 1
+      - name: page_size
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 100
+          default: 50
+      responses:
+        '200':
+          description: A page of sessions without key material.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OperationSessionPage'
+        '400':
+          description: Invalid filter or pagination.
+        '401':
+          description: Authentication required.
+        '403':
+          description: Administrator permission required.
+        '502':
+          description: Core could not return the sessions.
+  /api/v1/admin/op-sessions/{session_id}/revoke:
+    post:
+      tags:
+      - Administration
+      summary: Revoke an operation-key session
+      operationId: adminRevokeOperationSession
+      security:
+      - BearerAuth: []
+      - XOpKey: []
+      parameters:
+      - name: session_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '204':
+          description: Session revoked.
+        '400':
+          description: Invalid session identifier.
+        '401':
+          description: Authentication required.
+        '403':
+          description: Administrator permission required.
+        '404':
+          description: Session not found.
+        '502':
+          description: Core could not confirm the operation.
+  /api/v1/admin/op-sessions/{session_id}/expire:
+    post:
+      tags:
+      - Administration
+      summary: Expire an operation-key session
+      operationId: adminExpireOperationSession
+      security:
+      - BearerAuth: []
+      - XOpKey: []
+      parameters:
+      - name: session_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '204':
+          description: Session expired.
+        '400':
+          description: Invalid session identifier.
+        '401':
+          description: Authentication required.
+        '403':
+          description: Administrator permission required.
+        '404':
+          description: Session not found.
+        '502':
+          description: Core could not confirm the operation.
   /api/v1/admin/gift-cards:
     post:
       tags:
@@ -1159,6 +2136,7 @@ paths:
       operationId: adminCreateGiftCard
       security:
       - BearerAuth: []
+      - XOpKey: []
       requestBody:
         required: true
         content:
@@ -1289,6 +2267,14 @@ components:
       schema:
         type: integer
         minimum: 1
+    CategoryName:
+      name: category_name
+      in: query
+      required: false
+      description: Exact category name returned by the product categories endpoint.
+      schema:
+        type: string
+        minLength: 1
     PriceMin:
       name: price_min
       in: query
@@ -1337,6 +2323,60 @@ components:
         enum:
         - no-store
   responses:
+    AdminStockMovementRequestError:
+      description: Sanitized error; a valid movement UUID is included when available.
+      content:
+        application/json:
+          schema:
+            oneOf:
+            - $ref: '#/components/schemas/AdminErrorResponse'
+            - $ref: '#/components/schemas/AdminStockMovementError'
+    AdminInvalidRequest:
+      description: Invalid input or a sanitized field-level business error.
+      content:
+        application/json:
+          schema:
+            oneOf:
+            - $ref: '#/components/schemas/AdminErrorResponse'
+            - $ref: '#/components/schemas/AdminFieldErrorResponse'
+    AdminUnauthorized:
+      description: Authentication is required.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/AdminErrorResponse'
+    AdminForbidden:
+      description: Administrative permission is required.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/AdminErrorResponse'
+    AdminConflict:
+      description: A coupon with the exact code already exists.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/AdminFieldErrorResponse'
+    AdminCouponFailure:
+      description: >-
+        Core could not complete the coupon operation or returned an invalid
+        response. Upstream failure details are not exposed.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/AdminErrorResponse'
+    AdminNotFound:
+      description: The requested resource was not found.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/AdminErrorResponse'
+    AdminUpstreamFailure:
+      description: Core is unavailable or returned an invalid response; upstream details must not be exposed.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/AdminErrorResponse'
     CreditInvalidRequest:
       description: Sanitized error for an invalid request body or idempotency key.
       headers:
@@ -1368,6 +2408,41 @@ components:
           schema:
             $ref: '#/components/schemas/CreditUpstreamError'
   schemas:
+    CatalogEvent:
+      type: object
+      additionalProperties: false
+      required:
+      - event_id
+      - event_type
+      - occurred_at
+      - aggregate_type
+      - aggregate_id
+      properties:
+        event_id:
+          type: string
+          format: uuid
+        event_type:
+          type: string
+          enum:
+          - product.changed
+          - stock.changed
+          - promotion.changed
+        occurred_at:
+          type: string
+          format: date-time
+          description: UTC timestamp ending in Z or with a zero UTC offset.
+        aggregate_type:
+          type: string
+          description: Must match the event type prefix; stock aggregate IDs are product BGG IDs.
+          enum:
+          - product
+          - stock
+          - promotion
+        aggregate_id:
+          type: string
+          description: Product BGG ID for product or stock events; promotion ID for promotion events.
+          minLength: 1
+          maxLength: 128
     AuthRefreshRequest:
       type: object
       properties:
@@ -1611,6 +2686,24 @@ components:
           type: string
           minLength: 1
           maxLength: 2000
+    ReviewError:
+      type: object
+      required:
+      - code
+      properties:
+        code:
+          type: string
+        message:
+          type: string
+    ReviewErrorResponse:
+      type: object
+      required:
+      - errors
+      properties:
+        errors:
+          type: array
+          items:
+            $ref: '#/components/schemas/ReviewError'
     CreateReviewResponse:
       type: object
       required:
@@ -1778,6 +2871,43 @@ components:
           type: string
         is_active:
           type: boolean
+    OperationSession:
+      type: object
+      required: [id, ops, issued_at, revoked]
+      properties:
+        id:
+          type: string
+          format: uuid
+        user_id:
+          type: string
+          nullable: true
+        ops:
+          type: array
+          items:
+            type: string
+        issued_at:
+          type: string
+          format: date-time
+        expires_at:
+          type: string
+          format: date-time
+          nullable: true
+        last_used:
+          type: string
+          format: date-time
+          nullable: true
+        revoked:
+          type: boolean
+    OperationSessionPage:
+      type: object
+      required: [items, has_next]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/OperationSession'
+        has_next:
+          type: boolean
     AuthSession:
       type: object
       required:
@@ -1793,6 +2923,18 @@ components:
         csrf_token:
           type: string
           nullable: true
+        op_key:
+          type: string
+          description: Optional one-time operation key issued to eligible users.
+        op_key_expires_at:
+          type: string
+          nullable: true
+          format: date-time
+        ops:
+          type: array
+          nullable: true
+          items:
+            type: string
     AuthError:
       type: object
       required:
@@ -1901,6 +3043,520 @@ components:
           minimum: 0
           description: Current inventory available for this product.
           example: 10
+    AdminProductFields:
+      type: object
+      additionalProperties: false
+      properties:
+        bgg_id:
+          type: integer
+          minimum: 1
+        name:
+          type: string
+          minLength: 1
+          maxLength: 250
+        price:
+          type: number
+          exclusiveMinimum: 0
+          description: Positive base price.
+        quantity:
+          type: integer
+          minimum: 0
+        release_year:
+          type: integer
+          minimum: 1
+        min_players:
+          type: integer
+          minimum: 1
+        max_players:
+          type: integer
+          minimum: 1
+        playing_time_minutes:
+          type: integer
+          minimum: 1
+        min_age:
+          type: integer
+          minimum: 0
+        max_age:
+          type: integer
+          minimum: 0
+        weight:
+          type: number
+          minimum: 0
+        category:
+          type: array
+          items:
+            type: string
+        publisher:
+          type: string
+        image_file_name:
+          type: string
+          pattern: '\.webp$'
+          description: A single .webp filename or path; mutually exclusive with image_url.
+        image_url:
+          type: string
+          pattern: '\.webp$'
+          description: A single .webp URL or path; mutually exclusive with image_file_name.
+    AdminCreateProductRequest:
+      allOf:
+      - $ref: '#/components/schemas/AdminProductFields'
+      - type: object
+        required:
+        - name
+        - price
+        - quantity
+      oneOf:
+      - required:
+        - image_url
+      - required:
+        - image_file_name
+    AdminUpdateProductRequest:
+      allOf:
+      - $ref: '#/components/schemas/AdminProductFields'
+      - type: object
+        minProperties: 1
+        not:
+          anyOf:
+          - required:
+            - bgg_id
+          - required:
+            - quantity
+          - required:
+            - image_url
+            - image_file_name
+    AdminProductSummary:
+      type: object
+      required:
+      - bgg_id
+      - name
+      properties:
+        bgg_id:
+          type: integer
+          minimum: 1
+        name:
+          type: string
+    AdminAdjustStockRequest:
+      type: object
+      additionalProperties: false
+      required:
+      - movement_id
+      - direction
+      - quantity
+      properties:
+        movement_id:
+          type: string
+          format: uuid
+        direction:
+          type: string
+          enum:
+          - IN
+          - OUT
+        quantity:
+          type: integer
+          minimum: 1
+          maximum: 2147483647
+          description: Requested units for the movement.
+          example: 20
+    AdminStockMovementResult:
+      type: object
+      additionalProperties: false
+      required:
+      - movement_id
+      - status
+      - requested_quantity
+      - applied_quantity
+      - quantity_before
+      - quantity_after
+      properties:
+        movement_id:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum:
+          - APPLIED
+        requested_quantity:
+          type: integer
+          minimum: 1
+        applied_quantity:
+          type: integer
+          minimum: 0
+        quantity_before:
+          type: integer
+          minimum: 0
+        quantity_after:
+          type: integer
+          minimum: 0
+        warning:
+          type: string
+          description: Present when an OUT movement is limited by available stock.
+    AdminStockMovementId:
+      type: object
+      additionalProperties: false
+      required:
+      - movement_id
+      properties:
+        movement_id:
+          type: string
+          format: uuid
+    AdminStockMovementStatus:
+      type: object
+      additionalProperties: false
+      required:
+      - movement_id
+      - status
+      properties:
+        movement_id:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum:
+          - IN_PROGRESS
+          - APPLIED
+          - REJECTED
+    AdminStockMovementError:
+      type: object
+      additionalProperties: false
+      required:
+      - movement_id
+      - error
+      properties:
+        movement_id:
+          type: string
+          format: uuid
+        error:
+          type: string
+          description: Public error message without upstream details.
+    AdminPromotionFields:
+      type: object
+      additionalProperties: false
+      properties:
+        name:
+          type: string
+          minLength: 1
+        discount_percent:
+          type: number
+          minimum: 0
+          maximum: 50
+          description: Percentage discount from zero through 50, inclusive.
+        product_bgg_id:
+          type: integer
+          minimum: 1
+          nullable: true
+          description: >-
+            Optional product BGG identifier; omitted or null means a global
+            store offer. For each product, an eligible specific offer wins;
+            otherwise the highest eligible global percentage applies. Offers
+            do not stack. Coupon-linked promotion rows are not store offers.
+        active:
+          type: boolean
+          description: >-
+            Manual switch independent of validity dates. A disabled promotion
+            must not apply even within its validity period; an enabled
+            promotion remains subject to its dates. Existing promotions remain
+            inactive when the field is introduced. At most one active
+            promotion may reference each product.
+    AdminCreatePromotionRequest:
+      allOf:
+      - $ref: '#/components/schemas/AdminPromotionFields'
+      - type: object
+        required:
+        - name
+        - discount_percent
+        - active
+    AdminCouponRequestFields:
+      type: object
+      additionalProperties: false
+      properties:
+        code:
+          type: string
+          minLength: 1
+          maxLength: 64
+          description: Exact-case unique coupon code; no normalization is applied.
+        discount_percent:
+          type: number
+          minimum: 0
+          maximum: 50
+          description: Whole-purchase discount percentage, from zero through 50 inclusive.
+        remaining:
+          type: integer
+          format: int64
+          minimum: 0
+          description: Number of uses remaining.
+        active:
+          type: boolean
+        starts_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: UTC validity start, inclusive; null means no lower bound.
+        ends_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: UTC validity end, exclusive; start must precede end when both exist.
+    AdminCreateCouponRequest:
+      allOf:
+      - $ref: '#/components/schemas/AdminCouponRequestFields'
+      - type: object
+        required:
+        - code
+        - discount_percent
+        - remaining
+        - active
+    AdminUpdateCouponRequest:
+      type: object
+      additionalProperties: false
+      minProperties: 1
+      properties:
+        discount_percent:
+          type: number
+          minimum: 0
+          maximum: 50
+        remaining:
+          type: integer
+          format: int64
+          minimum: 0
+        active:
+          type: boolean
+        starts_at:
+          type: string
+          format: date-time
+          nullable: true
+        ends_at:
+          type: string
+          format: date-time
+          nullable: true
+    AdminAuditRecord:
+      type: object
+      additionalProperties: false
+      required:
+      - id
+      - actor_id
+      - action
+      - entity_type
+      - entity_id
+      - created_at
+      - changes
+      properties:
+        id:
+          type: integer
+          format: int64
+          minimum: 1
+        actor_id:
+          type: [string, 'null']
+        action:
+          type: string
+        entity_type:
+          type: [string, 'null']
+        entity_id:
+          type: [string, 'null']
+        created_at:
+          type: string
+          format: date-time
+        changes:
+          type: object
+          additionalProperties: false
+          required:
+          - before
+          - after
+          properties:
+            before:
+              type: [object, 'null']
+              additionalProperties: true
+              description: Redacted previous values, or null when none exist.
+            after:
+              type: [object, 'null']
+              additionalProperties: true
+              description: Redacted new values, or null when none exist.
+    AdminAuditPage:
+      type: object
+      additionalProperties: false
+      required:
+      - items
+      - next_cursor
+      properties:
+        items:
+          type: array
+          maxItems: 100
+          items:
+            $ref: '#/components/schemas/AdminAuditRecord'
+        next_cursor:
+          type: [string, 'null']
+          description: Opaque cursor for the next page, or null at the end.
+    AdminCoupon:
+      type: object
+      additionalProperties: false
+      required:
+      - id
+      - code
+      - discount_percent
+      - remaining
+      - active
+      - starts_at
+      - ends_at
+      - created_at
+      properties:
+        id:
+          type: integer
+          minimum: 1
+        code:
+          type: string
+        discount_percent:
+          type: number
+          minimum: 0
+          maximum: 50
+        remaining:
+          type: integer
+          format: int64
+          minimum: 0
+        active:
+          type: boolean
+        starts_at:
+          type: string
+          format: date-time
+          nullable: true
+        ends_at:
+          type: string
+          format: date-time
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+    AdminUpdatePromotionRequest:
+      allOf:
+      - $ref: '#/components/schemas/AdminPromotionFields'
+      - type: object
+        minProperties: 1
+    AdminPromotionSummary:
+      type: object
+      required:
+      - id
+      - name
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+    AdminPromotion:
+      allOf:
+      - $ref: '#/components/schemas/AdminPromotionSummary'
+      - type: object
+        required:
+        - discount_percent
+        - active
+        properties:
+          discount_percent:
+            type: number
+            minimum: 0
+            maximum: 50
+          active:
+            type: boolean
+            description: Manual activation state, independent of validity dates.
+          product_bgg_id:
+            type: integer
+            minimum: 1
+            nullable: true
+    CouponPreviewRequest:
+      type: object
+      additionalProperties: false
+      required:
+      - coupon_code
+      properties:
+        coupon_code:
+          type: string
+          minLength: 1
+          description: Exact, case-sensitive coupon code; no normalization is applied.
+    CouponPreviewResponse:
+      type: object
+      required:
+      - valid
+      - coupon_code
+      - discount_amount
+      - new_total
+      properties:
+        valid:
+          type: boolean
+        coupon_code:
+          type: string
+        discount_amount:
+          type: number
+          minimum: 0
+          description: >-
+            The selected total saving after preserving decimal precision and
+            rounding each total upward once to whole pesos.
+        new_total:
+          type: number
+          minimum: 0
+        reason:
+          type: string
+          nullable: true
+          enum:
+          - INACTIVE
+          - NOT_YET_VALID
+          - EXPIRED
+          - EXHAUSTED
+          - DISCOUNT_LIMIT_EXCEEDED
+          - EMPTY_CART
+    AdminFieldErrorResponse:
+      type: object
+      additionalProperties: false
+      required:
+      - errors
+      properties:
+        errors:
+          type: array
+          minItems: 1
+          items:
+            type: object
+            additionalProperties: false
+            required:
+            - code
+            - message
+            properties:
+              field:
+                type: string
+                description: Public input field name, when applicable.
+              code:
+                type: string
+              message:
+                type: string
+                description: Sanitized public message.
+    AdminProductPage:
+      type: object
+      required:
+      - items
+      - page
+      - page_size
+      - total
+      - total_pages
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Product'
+        page:
+          type: integer
+          minimum: 1
+        page_size:
+          type: integer
+          minimum: 1
+          maximum: 200
+        total:
+          type: integer
+          minimum: 0
+        total_pages:
+          type: integer
+          minimum: 0
+    AdminErrorResponse:
+      type: object
+      additionalProperties: false
+      required:
+      - error
+      properties:
+        error:
+          type: string
+          description: Stable public error message without upstream details.
     WishlistAddRequest:
       type: object
       additionalProperties: false
@@ -1966,6 +3622,14 @@ components:
           - pickup
         address:
           $ref: '#/components/schemas/ShippingAddress'
+        coupon_code:
+          type: string
+          minLength: 1
+          description: >-
+            Optional exact, case-sensitive coupon code. When present, X-Op-Key
+            is required and identifies this checkout operation. A supplied
+            coupon is reserved atomically only when its saving is selected;
+            preview does not reserve it.
     ShippingAddress:
       type: object
       additionalProperties: false
@@ -2064,7 +3728,6 @@ components:
           - pickup
         recipient:
           type: string
-          nullable: true
         street:
           type: string
           nullable: true

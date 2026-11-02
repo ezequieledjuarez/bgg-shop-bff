@@ -1,12 +1,12 @@
+import json
+import re
 import os
 import uuid
+from datetime import datetime
 from urllib.parse import urlsplit, urlunsplit
 
 import requests
 import logging
-import time
-import threading
-import hashlib
 
 
 MAX_PAGE_SIZE = 200
@@ -15,14 +15,6 @@ DEFAULT_GRAPHQL_URL = "http://localhost:8000/graphql/"
 logger = logging.getLogger(__name__)
 if not logger.handlers:
     logging.basicConfig(level=logging.INFO)
-
-# Simple in-memory cache for WhoAmI results to reduce upstream calls.
-# Keyed by sha256(token) -> (expiry_epoch, is_admin_bool, me_payload)
-_whoami_cache = {}
-_whoami_lock = threading.Lock()
-# 30 minutes default TTL (seconds)
-_WHOAMI_CACHE_TTL = int(os.getenv("WHOAMI_CACHE_TTL_SECONDS", 30 * 60))
-
 
 class UpstreamError(Exception):
     def __init__(self, message, code="UPSTREAM_ERROR", field=None, user_error=False, response_text=None, context=None):
@@ -49,7 +41,10 @@ def _auth_request(query, variables):
             os.getenv("SALEOR_GRAPHQL_URL", DEFAULT_GRAPHQL_URL),
             json={"query": query, "variables": variables},
             timeout=10,
+            allow_redirects=False,
         )
+        if response.status_code in (301, 302, 303, 307, 308):
+            raise UpstreamError("Authentication upstream returned a redirect")
         response.raise_for_status()
         payload = response.json()
     except (requests.RequestException, ValueError):
@@ -96,6 +91,8 @@ def _auth_result(payload, field):
         op_key = tokens.get("opKey") or tokens.get("op_key")
         if op_key:
             response["session"]["op_key"] = op_key
+            response["session"]["op_key_expires_at"] = tokens.get("opKeyExpiresAt")
+            response["session"]["ops"] = tokens.get("ops")
     return response
 
 
@@ -129,7 +126,7 @@ def authenticate_account(payload):
     mutation Login($input: LoginInput!) {
       login(input: $input) {
         user { id email firstName lastName isActive }
-        tokens { token refreshToken csrfToken }
+                tokens { token refreshToken csrfToken opKey opKeyExpiresAt ops }
         errors { field code message }
       }
     }
@@ -141,6 +138,24 @@ def authenticate_account(payload):
     if "session" not in result:
         raise UpstreamError("GraphQL login returned no session")
     return result
+
+
+def revoke_operation_key(op_key):
+    secret = os.getenv("OPKEY_INTERNAL_SECRET", "")
+    if len(secret.encode("utf-8")) < 32:
+        raise UpstreamError("Operation key revocation unavailable")
+    try:
+        response = requests.post(
+            f'{os.getenv("SALEOR_BASE_URL", "http://localhost:8000")}/internal/op-revoke',
+            json={"op_key": op_key, "reason": "logout"}, headers={"X-Internal-Secret": secret}, timeout=3, allow_redirects=False,
+        )
+        if response.status_code != 200:
+            raise UpstreamError("Operation key revocation failed")
+        payload = response.json()
+        if not isinstance(payload, dict) or type(payload.get("revoked")) is not int or payload["revoked"] < 0:
+            raise UpstreamError("Operation key revocation failed")
+    except (requests.RequestException, ValueError):
+        raise UpstreamError("Operation key revocation failed") from None
 
 
 def _pagination_value(value, name):
@@ -189,6 +204,17 @@ def _optional_decimal(value, name):
     return parsed
 
 
+def list_product_categories():
+    payload = _graphql_request("query ProductCategories { productCategories }", {})
+    data = payload.get("data")
+    categories = data.get("productCategories") if isinstance(data, dict) else None
+    if payload.get("errors") or not isinstance(categories, list) or not all(
+        isinstance(item, str) and item.strip() for item in categories
+    ):
+        raise UpstreamError("GraphQL upstream returned invalid categories")
+    return categories
+
+
 def list_products(
     page=1,
     page_size=50,
@@ -197,6 +223,7 @@ def list_products(
     min_players=None,
     max_players=None,
     category_id=None,
+    category_name=None,
     price_min=None,
     price_max=None,
     token=None,
@@ -205,6 +232,8 @@ def list_products(
     page_size = _pagination_value(page_size, "page_size")
     if search is not None and (not str(search).strip() or len(str(search)) > 200):
         raise ValueError("search must contain between 1 and 200 characters")
+    if category_name is not None and not str(category_name).strip():
+        raise ValueError("category_name must not be blank")
 
     filters = {
         "search": search,
@@ -212,6 +241,7 @@ def list_products(
         "minPlayers": _optional_integer(min_players, "min_players", 1, 999),
         "maxPlayers": _optional_integer(max_players, "max_players", 1, 999),
         "categoryId": _optional_integer(category_id, "category_id", 1, None),
+        "categoryName": str(category_name).strip() if category_name is not None else None,
         "priceMin": _optional_decimal(price_min, "price_min"),
         "priceMax": _optional_decimal(price_max, "price_max"),
     }
@@ -226,13 +256,13 @@ def list_products(
     query = """
     query Products(
         $page: Int!, $pageSize: Int!, $search: String, $yearPublished: Int,
-        $minPlayers: Int, $maxPlayers: Int, $categoryId: Int,
+        $minPlayers: Int, $maxPlayers: Int, $categoryId: Int, $categoryName: String,
         $priceMin: Float, $priceMax: Float
     ) {
         products(
             page: $page, pageSize: $pageSize, search: $search,
             yearPublished: $yearPublished, minPlayers: $minPlayers,
-            maxPlayers: $maxPlayers, categoryId: $categoryId,
+            maxPlayers: $maxPlayers, categoryId: $categoryId, categoryName: $categoryName,
             priceMin: $priceMin, priceMax: $priceMax
         ) {
             items {
@@ -312,30 +342,39 @@ def list_products(
     # end of list_products
 
 
-def _graphql_request(query, variables, token=None, op_key=None, map_wishlist_errors=False):
-    request_id = str(uuid.uuid4())
+def graphql_auth_headers(token=None, op_key=None):
     headers = {}
     if token:
         headers["Authorization"] = token
-    # Prefer explicit op_key argument, otherwise forward incoming header when present
-    try:
-        if op_key:
-            headers['X-Op-Key'] = op_key
-        else:
-            from flask import request as _flask_request
-            found = _flask_request.headers.get('X-Op-Key') or _flask_request.headers.get('x-op-key')
-            if found:
-                headers['X-Op-Key'] = found
-    except Exception:
-        # not running in Flask request context or header missing
-        pass
+    from flask import g, has_request_context, request
+    if has_request_context():
+        incoming_key = request.headers.get("X-Op-Key")
+        selected_key = op_key or incoming_key
+        secret = os.getenv("OPKEY_INTERNAL_SECRET", "")
+        if (incoming_key and selected_key == incoming_key and getattr(g, "op_session_valid", False)
+                and request.path.startswith("/api/v1/admin/") and len(secret.encode("utf-8")) >= 32):
+            headers.update({
+                "X-Op-Key": selected_key,
+                "X-Internal-Secret": secret,
+                "X-Op-Method": request.method,
+                "X-Op-Path": request.path,
+            })
+    return headers
+
+
+def _graphql_request(query, variables, token=None, op_key=None, map_wishlist_errors=False):
+    request_id = str(uuid.uuid4())
+    headers = graphql_auth_headers(token, op_key)
     try:
         response = requests.post(
             os.getenv("SALEOR_GRAPHQL_URL", DEFAULT_GRAPHQL_URL),
             json={"query": query, "variables": variables},
             headers=headers,
             timeout=10,
+            allow_redirects=False,
         )
+        if response.status_code in (301, 302, 303, 307, 308):
+            raise UpstreamError("GraphQL upstream returned a redirect")
         response.raise_for_status()
         payload = response.json()
     except (requests.RequestException, ValueError):
@@ -403,13 +442,6 @@ def get_product_detail(slug):
 
 
 def get_product_by_bgg_id(bgg_id, token=None):
-    """
-    Attempt a direct GraphQL query for a product by its numeric BGG id.
-    If the upstream schema supports `productByBggId`, use it. Otherwise
-    fall back to paginated `products` queries and scan for the matching id.
-    Returns the same normalized product dict as `get_product_detail`.
-    """
-    # First, try a direct field that some backends may expose.
     query_direct = """
     query ProductByBggId($bggId: Int!) {
       productByBggId(bggId: $bggId) {
@@ -420,74 +452,41 @@ def get_product_by_bgg_id(bgg_id, token=None):
       }
     }
     """
+    payload = _graphql_request(query_direct, {"bggId": int(bgg_id)}, token)
+    if payload.get("errors"):
+        raise UpstreamError("GraphQL upstream returned errors")
+    data = payload.get("data")
+    if not isinstance(data, dict) or "productByBggId" not in data:
+        raise UpstreamError("GraphQL upstream returned an invalid product payload")
+    product = data["productByBggId"]
+    if product is None:
+        raise UpstreamError("The requested game does not exist", "PRODUCT_NOT_FOUND")
     try:
-        # Debug: persist that we're attempting direct productByBggId lookup
-        try:
-            import json, datetime
-            with open('/tmp/bff-graphql-outgoing.log', 'a', encoding='utf-8') as fh:
-                fh.write(json.dumps({'ts': datetime.datetime.utcnow().isoformat() + 'Z', 'note': 'productByBggId_attempt', 'bgg_id': int(bgg_id)}, ensure_ascii=False) + "\n")
-        except Exception:
-            pass
-        payload = _graphql_request(query_direct, {"bggId": int(bgg_id)}, token)
-        product = (payload.get("data") or {}).get("productByBggId")
-        if product is None:
-            # upstream does not have this field or returned null; fall through
-            raise UpstreamError("Product not found by direct bggId query", "PRODUCT_NOT_FOUND")
-        # reuse the existing mapping logic
-        try:
-            return {
-                "bgg_id": product["bggId"],
-                "name": product["name"],
-                "weight": product["weight"],
-                "category": product["category"],
-                "price": product["price"],
-                "quantity": product["quantity"],
-                "publisher": product["publisher"],
-                "release_year": product["releaseYear"],
-                "min_players": product["minPlayers"],
-                "max_players": product["maxPlayers"],
-                "playing_time_minutes": product["playingTimeMinutes"],
-                "min_age": product["minAge"],
-                "image_url": product["imageUrl"],
-                "review_summary": {
-                    "approved_review_count": product["reviewSummary"]["approvedReviewCount"],
-                    "average_rating": product["reviewSummary"]["averageRating"],
-                },
-                "approved_reviews": [
-                    {"rating": item["rating"], "body": item["body"], "created_at": item["createdAt"]}
-                    for item in product.get("approvedReviews") or []
-                ],
-            }
-        except (KeyError, TypeError) as exc:
-            raise UpstreamError("GraphQL upstream returned an invalid product payload") from exc
-    except UpstreamError as exc:
-        # If upstream doesn't support the direct field, fall back to scanning products
-        try:
-            # page through results with reasonably large page_size to find the product
-            page = 1
-            page_size = 200
-            max_pages = 10
-            while page <= max_pages:
-                try:
-                    res = list_products(page=page, page_size=page_size, token=token)
-                except Exception:
-                    # propagate underlying upstream errors
-                    raise
-                items = res.get("items") if isinstance(res, dict) else []
-                for item in items:
-                    if str(item.get("bgg_id")) == str(bgg_id):
-                        return item
-                try:
-                    total_pages = int(res.get("total_pages") or 0)
-                    if total_pages and page >= total_pages:
-                        break
-                except Exception:
-                    pass
-                page += 1
-            raise UpstreamError("The requested game does not exist", "PRODUCT_NOT_FOUND")
-        except UpstreamError:
-            # bubble up the not-found or upstream error
-            raise
+        return {
+            "bgg_id": product["bggId"],
+            "name": product["name"],
+            "weight": product["weight"],
+            "category": product["category"],
+            "price": product["price"],
+            "quantity": product["quantity"],
+            "publisher": product["publisher"],
+            "release_year": product["releaseYear"],
+            "min_players": product["minPlayers"],
+            "max_players": product["maxPlayers"],
+            "playing_time_minutes": product["playingTimeMinutes"],
+            "min_age": product["minAge"],
+            "image_url": product["imageUrl"],
+            "review_summary": {
+                "approved_review_count": product["reviewSummary"]["approvedReviewCount"],
+                "average_rating": product["reviewSummary"]["averageRating"],
+            },
+            "approved_reviews": [
+                {"rating": item["rating"], "body": item["body"], "created_at": item["createdAt"]}
+                for item in product.get("approvedReviews") or []
+            ],
+        }
+    except (KeyError, TypeError, AttributeError) as exc:
+        raise UpstreamError("GraphQL upstream returned an invalid product payload") from exc
 
 
 def create_review(slug, rating, body, token):
@@ -587,7 +586,7 @@ def _cart_mutation(field, bgg_id, quantity, cart_id, token):
     variables = {"bggId": bgg_id, "cartId": cart_id}
     if quantity is not None:
         variables["quantity"] = quantity
-    payload = _graphql_request(query, variables, token)
+    payload = _graphql_request(query, variables, token, op_key=op_key)
     if payload.get("errors"):
         raise UpstreamError("GraphQL upstream returned errors")
     result = (payload.get("data") or {}).get(field)
@@ -762,10 +761,10 @@ def _order_payload(payload, field):
     return {"order": _map_order(order), "init_point": result.get("initPoint")}
 
 
-def checkout(shipping_mode, address, token):
+def checkout(shipping_mode, address, token, coupon_code=None, checkout_key=None):
     query = f"""
-    mutation Checkout($address: ShippingAddressInput, $shippingMode: ShippingMode!) {{
-      checkout(address: $address, shippingMode: $shippingMode) {{
+    mutation Checkout($address: ShippingAddressInput, $shippingMode: ShippingMode!, $couponCode: String, $checkoutKey: String) {{
+      checkout(address: $address, shippingMode: $shippingMode, couponCode: $couponCode, checkoutKey: $checkoutKey) {{
         order {{ {_ORDER_FIELDS} }} initPoint userErrors {{ field code message }}
       }}
     }}
@@ -780,8 +779,89 @@ def checkout(shipping_mode, address, token):
     payload = _graphql_request(query, {
         "address": core_address,
         "shippingMode": shipping_mode.upper(),
+        "couponCode": coupon_code,
+        "checkoutKey": checkout_key,
     }, token)
-    return _order_payload(payload, "checkout")
+    try:
+        return _order_payload(payload, "checkout")
+    except UpstreamError as exc:
+        status_by_code = {
+            "COUPON_NOT_FOUND": 404,
+            "COUPON_INACTIVE": 422,
+            "COUPON_NOT_YET_VALID": 422,
+            "COUPON_EXPIRED": 422,
+            "COUPON_EXHAUSTED": 422,
+            "DISCOUNT_LIMIT_EXCEEDED": 422,
+            "IDEMPOTENCY_CONFLICT": 409,
+        }
+        status = status_by_code.get(exc.code)
+        if status is None:
+            raise
+        safe_messages = {
+            "COUPON_NOT_FOUND": "Coupon not found.",
+            "COUPON_INACTIVE": "Coupon is not eligible for checkout.",
+            "COUPON_NOT_YET_VALID": "Coupon is not eligible for checkout.",
+            "COUPON_EXPIRED": "Coupon is not eligible for checkout.",
+            "COUPON_EXHAUSTED": "Coupon is not eligible for checkout.",
+            "DISCOUNT_LIMIT_EXCEEDED": "Coupon is not eligible for checkout.",
+            "IDEMPOTENCY_CONFLICT": "X-Op-Key was already used for a different checkout.",
+        }
+        return (
+            {"errors": [{"code": exc.code, "message": safe_messages[exc.code]}]},
+            status,
+        )
+
+
+def preview_coupon(code, token):
+    query = """
+    query PreviewCoupon($code: String!) {
+      previewCoupon(code: $code) {
+        valid couponCode discountAmount newTotal reason
+      }
+    }
+    """
+    payload = _graphql_request(query, {"code": code}, token)
+    if not isinstance(payload, dict):
+        raise UpstreamError("GraphQL upstream returned an invalid coupon preview")
+    errors = payload.get("errors") or []
+    if errors:
+        codes = [
+            error.get("extensions", {}).get("code")
+            for error in errors if isinstance(error, dict)
+        ]
+        if "UNAUTHENTICATED" in codes:
+            raise UpstreamError("Authentication is required.", "UNAUTHENTICATED")
+        if "NOT_FOUND" in codes:
+            raise UpstreamError("Coupon not found.", "COUPON_NOT_FOUND")
+        raise UpstreamError("GraphQL upstream request failed")
+    result = (payload.get("data") or {}).get("previewCoupon")
+    if (
+        not isinstance(result, dict)
+        or type(result.get("valid")) is not bool
+        or result.get("couponCode") != code
+        or (
+            result.get("reason") is not None
+            and result["reason"] not in {
+                "INACTIVE", "NOT_YET_VALID", "EXPIRED", "EXHAUSTED",
+                "DISCOUNT_LIMIT_EXCEEDED", "EMPTY_CART",
+            }
+        )
+    ):
+        raise UpstreamError("GraphQL upstream returned an invalid coupon preview")
+    for field in ("discountAmount", "newTotal"):
+        value = result.get(field)
+        if (
+            isinstance(value, bool) or not isinstance(value, (int, float))
+            or value < 0
+        ):
+            raise UpstreamError("GraphQL upstream returned an invalid coupon preview")
+    return {
+        "valid": result["valid"],
+        "coupon_code": result["couponCode"],
+        "discount_amount": result["discountAmount"],
+        "new_total": result["newTotal"],
+        "reason": result.get("reason"),
+    }
 
 
 def retry_payment(order_id, token):
@@ -814,7 +894,7 @@ def get_orders(token):
     query = f"""
     query MyOrders {{ myOrders {{ {_ORDER_FIELDS} }} }}
     """
-    payload = _graphql_request(query, {}, token)
+    payload = _graphql_request(query, {}, token, op_key=op_key)
     _raise_order_graphql_errors(payload)
     orders = (payload.get("data") or {}).get("myOrders")
     if not isinstance(orders, list):
@@ -862,83 +942,66 @@ def get_invoice(order_id, token):
 
 
 def check_admin(token):
-    """Return True if the provided Authorization token belongs to an admin user."""
+    """Return admin status, or None when Core reports no authenticated user."""
     query = """
     query WhoAmI {
       me { id email isStaff isSuperuser }
     }
     """
-    # Normalize token and guard empty values
     if not token or not isinstance(token, str) or not token.strip():
-        return False
+        return None
     token = token.strip()
+    payload = _graphql_request(query, {}, token)
+    if not isinstance(payload, dict) or "errors" in payload:
+        raise UpstreamError("GraphQL upstream returned an invalid identity")
+    data = payload.get("data")
+    if not isinstance(data, dict) or "me" not in data:
+        raise UpstreamError("GraphQL upstream returned an invalid identity")
+    me = data["me"]
+    if me is None:
+        return None
+    if (not isinstance(me, dict)
+            or any(not isinstance(me.get(field), str) or not me[field] for field in ("id", "email"))
+            or any(type(me.get(field)) is not bool for field in ("isStaff", "isSuperuser"))):
+        raise UpstreamError("GraphQL upstream returned an invalid identity")
+    return me["isStaff"] or me["isSuperuser"]
 
-    # Compute cache key (hash token for safety)
-    try:
-        key = hashlib.sha256(token.encode('utf-8')).hexdigest()
-    except Exception:
-        key = token[:64]
 
-    # Try cached result
-    now = time.time()
-    try:
-        with _whoami_lock:
-            entry = _whoami_cache.get(key)
-            if entry and entry[0] > now:
-                # entry: (expiry, is_admin, me)
-                return bool(entry[1])
-    except Exception:
-        # cache failures are non-fatal
-        pass
-
-    # Make upstream call(s) when cache miss. If `me` is null/invalid, retry a few
-    # times before treating it as a negative result. Do NOT cache a null `me`
-    # result immediately to avoid prolonged denial due to transient upstream
-    # glitches.
-    attempts = int(os.getenv("WHOAMI_RETRY_COUNT", 2))
-    base_delay = float(os.getenv("WHOAMI_RETRY_BASE_DELAY_SECONDS", 0.25))
-    last_payload = None
-    for attempt in range(0, attempts + 1):
-        payload = _graphql_request(query, {}, token)
-
-        # If upstream returned GraphQL errors, surface as upstream failure
-        if payload.get("errors"):
-            raise UpstreamError("GraphQL upstream returned errors")
-
-        last_payload = payload
-        me = (payload.get("data") or {}).get("me")
-        if isinstance(me, dict):
-            # Valid response — determine admin status and cache it
-            is_admin = bool(me.get("isStaff") or me.get("isSuperuser"))
+def list_available_coupons():
+    query = """
+    query AvailableCoupons {
+      availableCoupons { code startsAt endsAt }
+    }
+    """
+    payload = _graphql_request(query, {})
+    if not isinstance(payload, dict) or payload.get("errors"):
+        raise UpstreamError("GraphQL upstream returned errors")
+    data = payload.get("data")
+    coupons = data.get("availableCoupons") if isinstance(data, dict) else None
+    if not isinstance(coupons, list):
+        raise UpstreamError("GraphQL upstream returned an invalid coupon list")
+    result = []
+    for coupon in coupons:
+        if not isinstance(coupon, dict) or not isinstance(coupon.get("code"), str) or not coupon["code"].strip():
+            raise UpstreamError("GraphQL upstream returned an invalid coupon")
+        dates = []
+        for field in ("startsAt", "endsAt"):
+            value = coupon.get(field)
             try:
-                with _whoami_lock:
-                    _whoami_cache[key] = (time.time() + _WHOAMI_CACHE_TTL, is_admin, me)
-            except Exception:
-                pass
-            return is_admin
-
-        # If we have more attempts left, wait a bit and retry
-        if attempt < attempts:
-            try:
-                time.sleep(base_delay * (2 ** attempt))
-                continue
-            except Exception:
-                # If sleep is interrupted, break and treat as negative below
-                pass
-
-        # Exhausted retries — cache a negative result (but store the raw me value)
-        try:
-            with _whoami_lock:
-                _whoami_cache[key] = (time.time() + _WHOAMI_CACHE_TTL, False, me)
-        except Exception:
-            pass
-        return False
+                parsed = datetime.fromisoformat(value.replace("Z", "+00:00")) if isinstance(value, str) else None
+            except ValueError:
+                parsed = None
+            if parsed is None or parsed.utcoffset() is None:
+                raise UpstreamError("GraphQL upstream returned an invalid coupon date")
+            dates.append(value)
+        result.append({"code": coupon["code"], "starts_at": dates[0], "ends_at": dates[1]})
+    return result
 
 
 def list_promotions():
     query = """
     query ListPromotions {
-      promotions { id name discountPercent active }
+            promotions { id name discountPercent: discountPct active productBggId }
     }
     """
     payload = _graphql_request(query, {}, None)
@@ -953,6 +1016,7 @@ def list_promotions():
             "name": p.get("name"),
             "discount_percent": p.get("discountPercent"),
             "active": bool(p.get("active")),
+            "product_bgg_id": p.get("productBggId"),
         }
         for p in promotions
     ]
@@ -1004,7 +1068,7 @@ def create_promotion(payload, token=None, op_key=None):
     return {"id": promo.get("id"), "name": promo.get("name")}
 
 
-def update_promotion(promotion_id, payload, token=None):
+def update_promotion(promotion_id, payload, token=None, op_key=None):
     if not isinstance(payload, dict):
         raise ValueError("payload must be an object")
     query = """
@@ -1015,8 +1079,11 @@ def update_promotion(promotion_id, payload, token=None):
       }
     }
     """
-    variables = {"id": promotion_id, "input": payload}
-    resp = _graphql_request(query, variables, token)
+    variables = {"id": promotion_id, "input": {
+        {"discount_percent": "discountPercent", "product_bgg_id": "productBggId"}.get(key, key): value
+        for key, value in payload.items()
+    }}
+    resp = _graphql_request(query, variables, token, op_key=op_key)
     if resp.get("errors"):
         raise UpstreamError("GraphQL upstream returned errors")
     result = (resp.get("data") or {}).get("updatePromotion")
@@ -1028,6 +1095,237 @@ def update_promotion(promotion_id, payload, token=None):
         raise UpstreamError(err.get("message", "Update promotion failed"), err.get("code"), err.get("field"), user_error=True)
     promo = result.get("promotion")
     return {"id": promo.get("id"), "name": promo.get("name")}
+
+
+_ADMIN_COUPON_FIELDS = """
+    id code discountPercent remaining active startsAt endsAt createdAt
+"""
+
+
+def _coupon_datetime(value, field, nullable=False):
+    if nullable and value is None:
+        return None
+    if not isinstance(value, str):
+        raise UpstreamError("GraphQL upstream returned an invalid coupon")
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        raise UpstreamError("GraphQL upstream returned an invalid coupon") from None
+    if parsed.utcoffset() is None:
+        raise UpstreamError("GraphQL upstream returned an invalid coupon")
+    return value
+
+
+def _map_admin_coupon(coupon):
+    if not isinstance(coupon, dict):
+        raise UpstreamError("GraphQL upstream returned an invalid coupon")
+    identifier = coupon.get("id")
+    discount = coupon.get("discountPercent")
+    remaining = coupon.get("remaining")
+    active = coupon.get("active")
+    if (
+        type(identifier) is not int or identifier < 1
+        or not isinstance(coupon.get("code"), str) or not coupon["code"]
+        or isinstance(discount, bool) or not isinstance(discount, (int, float))
+        or not 0 <= discount <= 50
+        or type(remaining) is not int or remaining < 0
+        or type(active) is not bool
+    ):
+        raise UpstreamError("GraphQL upstream returned an invalid coupon")
+    starts_at = _coupon_datetime(coupon.get("startsAt"), "startsAt", nullable=True)
+    ends_at = _coupon_datetime(coupon.get("endsAt"), "endsAt", nullable=True)
+    created_at = _coupon_datetime(coupon.get("createdAt"), "createdAt")
+    if starts_at and ends_at:
+        start = datetime.fromisoformat(starts_at.replace("Z", "+00:00"))
+        end = datetime.fromisoformat(ends_at.replace("Z", "+00:00"))
+        if start >= end:
+            raise UpstreamError("GraphQL upstream returned an invalid coupon")
+    return {
+        "id": identifier,
+        "code": coupon["code"],
+        "discount_percent": discount,
+        "remaining": remaining,
+        "active": active,
+        "starts_at": starts_at,
+        "ends_at": ends_at,
+        "created_at": created_at,
+    }
+
+
+def _admin_coupon_user_errors(payload, operation):
+    if payload.get("errors"):
+        raise UpstreamError("GraphQL upstream returned errors")
+    result = (payload.get("data") or {}).get(operation)
+    if not isinstance(result, dict):
+        raise UpstreamError("GraphQL upstream returned an invalid coupon payload")
+    errors = result.get("userErrors") or []
+    if errors:
+        error = errors[0]
+        code = error.get("code")
+        message = error.get("message")
+        field = error.get("field")
+        if (
+            not isinstance(code, str) or not isinstance(message, str)
+            or (field is not None and not isinstance(field, list))
+        ):
+            raise UpstreamError("GraphQL upstream returned an invalid coupon error")
+        raise UpstreamError(message, code, field, user_error=True)
+    return result.get("coupon")
+
+
+_AUDIT_SENSITIVE_KEY = re.compile(
+    r"password|passwd|secret|token|credential|authorization|api[_-]?key|card|cvv|cvc|payment|iban",
+    re.IGNORECASE,
+)
+_AUDIT_FIELD_NAMES = {
+    "entityType": "entity_type", "entityId": "entity_id", "actorId": "actor_id",
+    "action": "action", "createdFrom": "created_from", "createdTo": "created_to",
+    "cursor": "cursor", "limit": "limit",
+}
+
+
+def _audit_redact(value, depth=0):
+    if depth > 12:
+        return "[REDACTED]"
+    if isinstance(value, dict):
+        return {
+            key: "[REDACTED]" if _AUDIT_SENSITIVE_KEY.search(str(key)) else _audit_redact(item, depth + 1)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_audit_redact(item, depth + 1) for item in value]
+    return value
+
+
+def _audit_changes(value):
+    if value is None:
+        return None
+    try:
+        parsed = json.loads(value) if isinstance(value, str) else value
+    except ValueError:
+        return None
+    return _audit_redact(parsed) if isinstance(parsed, (dict, list)) else None
+
+
+def _audit_graphql_error(payload):
+    for error in payload.get("errors") or []:
+        extensions = error.get("extensions") if isinstance(error, dict) else None
+        code = extensions.get("code") if isinstance(extensions, dict) else None
+        if code in ("UNAUTHENTICATED", "FORBIDDEN"):
+            return UpstreamError("Audit request rejected", code, user_error=True)
+        if code == "INVALID":
+            field = _AUDIT_FIELD_NAMES.get(extensions.get("field"), extensions.get("field"))
+            field = field if field in _AUDIT_FIELD_NAMES.values() else None
+            return UpstreamError("Audit request is invalid", "INVALID", [field] if field else None, user_error=True)
+        break
+    return UpstreamError("GraphQL upstream returned errors")
+
+
+def list_admin_audit(filters, token=None, op_key=None):
+    query = """
+    query AdminAudit($entityType: String, $entityId: String, $actorId: String, $action: String,
+                     $createdFrom: String, $createdTo: String, $cursor: String, $limit: Int) {
+      adminAuditLogs(entityType: $entityType, entityId: $entityId, actorId: $actorId, action: $action,
+                     createdFrom: $createdFrom, createdTo: $createdTo, cursor: $cursor, limit: $limit) {
+        records { id actorId action entityType entityId createdAt before after }
+        nextCursor
+      }
+    }
+    """
+    camel = {value: key for key, value in _AUDIT_FIELD_NAMES.items()}
+    variables = {camel[key]: value for key, value in filters.items() if key in camel}
+    payload = _graphql_request(query, variables, token)
+    if payload.get("errors"):
+        raise _audit_graphql_error(payload)
+    page = (payload.get("data") or {}).get("adminAuditLogs")
+    if not isinstance(page, dict) or not isinstance(page.get("records"), list):
+        raise UpstreamError("GraphQL upstream returned an invalid audit page")
+    items = []
+    for record in page["records"]:
+        if not isinstance(record, dict):
+            raise UpstreamError("GraphQL upstream returned an invalid audit record")
+        items.append({
+            "id": record.get("id"),
+            "actor_id": record.get("actorId"),
+            "action": record.get("action"),
+            "entity_type": record.get("entityType"),
+            "entity_id": record.get("entityId"),
+            "created_at": record.get("createdAt"),
+            "changes": {
+                "before": _audit_changes(record.get("before")),
+                "after": _audit_changes(record.get("after")),
+            },
+        })
+    return {"items": items, "next_cursor": page.get("nextCursor")}
+
+
+def list_admin_coupons(token=None, op_key=None):
+    query = f"""
+    query AdminCoupons {{
+      adminCoupons {{ {_ADMIN_COUPON_FIELDS} }}
+    }}
+    """
+    payload = _graphql_request(query, {}, token)
+    if payload.get("errors"):
+        raise UpstreamError("GraphQL upstream returned errors")
+    coupons = (payload.get("data") or {}).get("adminCoupons")
+    if not isinstance(coupons, list):
+        raise UpstreamError("GraphQL upstream returned an invalid coupon list")
+    return [_map_admin_coupon(coupon) for coupon in coupons]
+
+
+def create_admin_coupon(payload, token=None, op_key=None):
+    if not isinstance(payload, dict):
+        raise ValueError("payload must be an object")
+    query = f"""
+    mutation CreateAdminCoupon($input: AdminCreateCouponInput!) {{
+      createAdminCoupon(input: $input) {{
+        coupon {{ {_ADMIN_COUPON_FIELDS} }}
+        userErrors {{ field code message }}
+      }}
+    }}
+    """
+    mapped = {
+        {
+            "discount_percent": "discountPercent",
+            "starts_at": "startsAt",
+            "ends_at": "endsAt",
+        }.get(key, key): value
+        for key, value in payload.items()
+    }
+    result = _admin_coupon_user_errors(
+        _graphql_request(query, {"input": mapped}, token, op_key=op_key),
+        "createAdminCoupon",
+    )
+    return _map_admin_coupon(result)
+
+
+def update_admin_coupon(coupon_id, payload, token=None, op_key=None):
+    if type(coupon_id) is not int or not 1 <= coupon_id <= 2147483647:
+        raise ValueError("coupon_id must be a positive integer")
+    if not isinstance(payload, dict):
+        raise ValueError("payload must be an object")
+    query = f"""
+    mutation UpdateAdminCoupon($id: Int!, $input: AdminUpdateCouponInput!) {{
+      updateAdminCoupon(id: $id, input: $input) {{
+        coupon {{ {_ADMIN_COUPON_FIELDS} }}
+        userErrors {{ field code message }}
+      }}
+    }}
+    """
+    mapped = {
+        {
+            "discount_percent": "discountPercent",
+            "starts_at": "startsAt",
+            "ends_at": "endsAt",
+        }.get(key, key): value
+        for key, value in payload.items()
+    }
+    result = _admin_coupon_user_errors(
+        _graphql_request(query, {"id": coupon_id, "input": mapped}, token, op_key=op_key),
+        "updateAdminCoupon",
+    )
+    return _map_admin_coupon(result)
 
 
 # Admin mutations and management helpers
@@ -1189,31 +1487,79 @@ def update_product(product_id, payload, token=None, op_key=None):
     return {"bgg_id": product.get("bggId"), "name": product.get("name")}
 
 
-def adjust_variant_stock(product_id, variant_id, new_stock, token=None):
-    try:
-        new_stock_int = int(new_stock)
-    except (ValueError, TypeError):
-        raise ValueError("new_stock must be an integer")
+def get_stock_movement_status(movement_id, token=None):
     query = """
-    mutation AdjustVariantStock($productId: ID!, $variantId: ID!, $newStock: Int!) {
-      adjustVariantStock(productId: $productId, variantId: $variantId, newStock: $newStock) {
-        success
-        errors { field code message }
+    query StockMovementStatus($movementId: ID!) {
+      adminStockMovementStatus(movementId: $movementId) {
+        movementId status userErrors { code }
       }
     }
     """
-    variables = {"productId": product_id, "variantId": variant_id, "newStock": new_stock_int}
-    payload_resp = _graphql_request(query, variables, token)
-    if payload_resp.get("errors"):
-        raise UpstreamError("GraphQL upstream returned errors")
-    result = (payload_resp.get("data") or {}).get("adjustVariantStock")
-    if not isinstance(result, dict):
-        raise UpstreamError("GraphQL upstream returned an invalid adjustVariantStock payload")
-    errors = result.get("errors") or []
+    payload = _graphql_request(query, {"movementId": movement_id}, token)
+    if not isinstance(payload, dict) or payload.get("errors"):
+        raise UpstreamError("Stock status request failed")
+    data = payload.get("data")
+    result = data.get("adminStockMovementStatus") if isinstance(data, dict) else None
+    if not isinstance(result, dict) or not isinstance(result.get("userErrors"), list):
+        raise UpstreamError("Stock status request failed")
+    try:
+        if str(uuid.UUID(result["movementId"])) != movement_id:
+            raise ValueError("Movement identifier mismatch")
+    except (KeyError, ValueError, TypeError, AttributeError):
+        raise UpstreamError("Stock status request failed") from None
+    errors = result["userErrors"]
     if errors:
-        err = errors[0]
-        raise UpstreamError(err.get("message", "Adjust stock failed"), err.get("code"), err.get("field"), user_error=True)
-    return {"success": bool(result.get("success"))}
+        if not isinstance(errors[0], dict) or not isinstance(errors[0].get("code"), str) or result.get("status") is not None:
+            raise UpstreamError("Stock status request failed")
+        raise UpstreamError("Stock status request failed", errors[0]["code"], user_error=True)
+    if result.get("status") not in ("IN_PROGRESS", "APPLIED", "REJECTED"):
+        raise UpstreamError("Stock status request failed")
+    return {"movement_id": movement_id, "status": result["status"]}
+
+
+def adjust_product_stock(product_id, movement_id, direction, quantity, token=None):
+    query = """
+    mutation AdjustProductStock($productId: ID!, $movementId: ID!, $direction: StockMovementDirection!, $quantity: Int!) {
+      adjustProductStock(productId: $productId, movementId: $movementId, direction: $direction, quantity: $quantity) {
+        movementId status requestedQuantity appliedQuantity quantityBefore quantityAfter errors { code }
+      }
+    }
+    """
+    variables = {"productId": product_id, "movementId": movement_id, "direction": direction, "quantity": quantity}
+    payload = _graphql_request(query, variables, token)
+    if not isinstance(payload, dict) or payload.get("errors"):
+        raise UpstreamError("Stock movement request failed")
+    data = payload.get("data")
+    result = data.get("adjustProductStock") if isinstance(data, dict) else None
+    if not isinstance(result, dict) or not isinstance(result.get("errors"), list):
+        raise UpstreamError("Stock movement request failed")
+    try:
+        if str(uuid.UUID(result["movementId"])) != movement_id:
+            raise ValueError("Movement identifier mismatch")
+    except (KeyError, ValueError, TypeError, AttributeError):
+        raise UpstreamError("Stock movement request failed") from None
+    errors = result["errors"]
+    if errors:
+        if not isinstance(errors[0], dict) or not isinstance(errors[0].get("code"), str) or result.get("status") is not None:
+            raise UpstreamError("Stock movement request failed")
+        raise UpstreamError("Stock movement request failed", errors[0]["code"], user_error=True)
+    if result.get("status") == "IN_PROGRESS":
+        if any(result.get(field) is not None for field in ("requestedQuantity", "appliedQuantity", "quantityBefore", "quantityAfter")):
+            raise UpstreamError("Stock movement request failed")
+        return {"movement_id": movement_id, "status": "IN_PROGRESS"}
+    values = [result.get(field) for field in ("requestedQuantity", "appliedQuantity", "quantityBefore", "quantityAfter")]
+    if result.get("status") != "APPLIED" or any(type(value) is not int or value < 0 for value in values):
+        raise UpstreamError("Stock movement request failed")
+    requested, applied, before, after = values
+    expected_applied = quantity if direction == "IN" else min(before, quantity)
+    expected_after = before + applied if direction == "IN" else before - applied
+    if requested != quantity or applied != expected_applied or after != expected_after or after > 2147483647:
+        raise UpstreamError("Stock movement request failed")
+    response = {"movement_id": movement_id, "status": "APPLIED", "requested_quantity": requested,
+                "applied_quantity": applied, "quantity_before": before, "quantity_after": after}
+    if direction == "OUT" and applied < requested:
+        response["warning"] = "Requested quantity exceeded available stock; stock is now zero."
+    return response
 
 
 def apply_coupon_preview(code, input_payload):

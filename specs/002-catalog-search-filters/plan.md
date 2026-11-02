@@ -2,6 +2,7 @@
 
 **Branch**: `CU-06-wishlist` | **Date**: 2026-10-21 | **Spec**: [`spec.md`](./spec.md)
 **Input**: Feature specification from `/specs/002-catalog-search-filters/spec.md`
+**Status**: Closed with exceptions on 2026-10-30; see the [canonical closure](../../../specs/002-catalog-search-filters-as-built/spec.md).
 
 ## Summary
 
@@ -77,9 +78,9 @@ ODD-recorded BFF verification:
 - BFF `python -m pytest` — 10 passed.
 - OpenAPI/Core GraphQL mapping and request validation are documented in the ODD implementation record.
 
-- Pending verification: No browser-based visual validation or live end-to-end validation with running services and a database was performed, per the ODD record.
+- The historical ODD record did not report browser or live end-to-end validation. Subsequent local category and representative filter checks are recorded in [Frontend tasks](../../../bgg-shop-frontend/specs/002-catalog-search-filters/tasks.md); they do not cover every combination.
 
-This plan is retrospective. It does not claim these implementation checks were rerun while generating this document. Behavior not verified by the cited ODD record remains pending.
+This plan is retrospective. It does not claim historical checks were rerun while generating this document; later observed results are recorded separately.
 
 ## Complexity Tracking
 

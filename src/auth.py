@@ -17,12 +17,16 @@ def admin_required(f):
 			# If X-Op-Key was validated earlier by middleware, allow
 			if getattr(g, "op_session_valid", False):
 				return f(*args, **kwargs)
+			if getattr(g, "op_session_validation_failed", False):
+				return jsonify({"error": "upstream GraphQL request failed"}), 502
 			return jsonify({"error": "Authentication required"}), 401
 		token = auth_header.strip()
 		try:
 			is_admin = proxy.check_admin(token)
 		except UpstreamError:
 			return jsonify({"error": "upstream GraphQL request failed"}), 502
+		if is_admin is None:
+			return jsonify({"error": "Authentication required"}), 401
 		if not is_admin:
 			return jsonify({"error": "forbidden"}), 403
 		return f(*args, **kwargs)
