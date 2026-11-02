@@ -1,4 +1,5 @@
 from . import proxy
+from .catalog_cache import catalog_response
 
 
 def register_account(payload):
@@ -10,15 +11,35 @@ def authenticate_account(payload):
 
 
 def list_products(**filters):
-    return proxy.list_products(**filters)
+    return catalog_response(
+        "products",
+        filters,
+        lambda: proxy.list_products(**filters),
+    )
+
+
+def list_product_categories():
+    return proxy.list_product_categories()
+
+
+def list_available_coupons():
+    return proxy.list_available_coupons()
 
 
 def get_product_detail(slug):
-    return proxy.get_product_detail(slug)
+    return catalog_response(
+        "game-detail",
+        {"slug": slug},
+        lambda: proxy.get_product_detail(slug),
+    )
 
 
 def get_product_by_bgg_id(bgg_id, token=None):
     return proxy.get_product_by_bgg_id(bgg_id, token)
+
+
+def get_stock_movement_status(movement_id, token=None):
+    return proxy.get_stock_movement_status(movement_id, token)
 
 
 def create_review(slug, rating, body, token):
@@ -54,7 +75,35 @@ def remove_from_wishlist(bgg_id, token):
 
 
 def checkout(shipping_mode, address, token):
-    return proxy.checkout(shipping_mode, address, token)
+    from flask import g, has_request_context, request
+
+    coupon_code = None
+    checkout_key = None
+    coupon_provided = False
+    if has_request_context():
+        coupon_provided = hasattr(g, "checkout_coupon_code")
+        coupon_code = getattr(g, "checkout_coupon_code", None)
+        checkout_key = request.headers.get("X-Op-Key")
+    if coupon_provided:
+        if not isinstance(coupon_code, str) or not coupon_code or len(coupon_code) > 64:
+            raise proxy.UpstreamError(
+                "A valid coupon_code is required.", "INVALID", user_error=True
+            )
+        if not checkout_key or len(checkout_key) > 512:
+            raise proxy.UpstreamError(
+                "X-Op-Key is required for coupon checkout.",
+                "INVALID",
+                field="X-Op-Key",
+                user_error=True,
+            )
+    return proxy.checkout(
+        shipping_mode, address, token, coupon_code=coupon_code,
+        checkout_key=checkout_key,
+    )
+
+
+def preview_coupon(code, token):
+    return proxy.preview_coupon(code, token)
 
 
 def retry_payment(order_id, token):
@@ -119,19 +168,6 @@ def admin_create_product(payload):
                 op_key = _flask_request.headers.get('X-Op-Key') or _flask_request.headers.get('x-op-key')
         except Exception:
             pass
-    # If an op_key was provided but no Authorization token, allow using
-    # a configured internal admin token so the BFF can perform upstream
-    # GraphQL admin mutations during testing/dev. Set via env `BFF_ADMIN_TOKEN`.
-    if not token and op_key:
-        import os
-        token = os.getenv("BFF_ADMIN_TOKEN")
-        if not token:
-            # try reading a token file for quick local testing
-            try:
-                with open('/tmp/bff_admin_token', 'r', encoding='utf-8') as fh:
-                    token = fh.read().strip()
-            except Exception:
-                token = None
     # remove internal helper keys if present
     if isinstance(payload, dict):
         payload = {k: v for k, v in payload.items() if k not in ("_auth_token", "_op_key")}
@@ -152,25 +188,38 @@ def admin_update_product(product_id, payload):
             pass
     if isinstance(payload, dict):
         payload = {k: v for k, v in payload.items() if k not in ("_auth_token", "_op_key")}
-    if not token and op_key:
-        import os
-        token = os.getenv("BFF_ADMIN_TOKEN")
-        if not token:
-            try:
-                with open('/tmp/bff_admin_token', 'r', encoding='utf-8') as fh:
-                    token = fh.read().strip()
-            except Exception:
-                token = None
     return proxy.update_product(product_id, payload, token, op_key=op_key)
 
 
-def adjust_variant_stock(product_id, variant_id, new_stock, token=None):
-    return proxy.adjust_variant_stock(product_id, variant_id, new_stock, token)
+def adjust_product_stock(product_id, movement_id, direction, quantity, token=None):
+    return proxy.adjust_product_stock(product_id, movement_id, direction, quantity, token)
 
 
 # Promotions
 def admin_list_promotions():
     return proxy.list_promotions()
+
+
+def admin_list_audit(filters, token=None, op_key=None):
+    return proxy.list_admin_audit(filters, token, op_key=op_key)
+
+
+def admin_list_coupons(token=None, op_key=None):
+    return proxy.list_admin_coupons(token, op_key=op_key)
+
+
+def admin_create_coupon(payload):
+    token = payload.get("_auth_token") if isinstance(payload, dict) else None
+    op_key = payload.get("_op_key") if isinstance(payload, dict) else None
+    data = {key: value for key, value in payload.items() if key not in ("_auth_token", "_op_key")}
+    return proxy.create_admin_coupon(data, token, op_key=op_key)
+
+
+def admin_update_coupon(coupon_id, payload):
+    token = payload.get("_auth_token") if isinstance(payload, dict) else None
+    op_key = payload.get("_op_key") if isinstance(payload, dict) else None
+    data = {key: value for key, value in payload.items() if key not in ("_auth_token", "_op_key")}
+    return proxy.update_admin_coupon(coupon_id, data, token, op_key=op_key)
 
 
 def admin_create_promotion(payload):
@@ -187,23 +236,15 @@ def admin_create_promotion(payload):
             pass
     if isinstance(payload, dict):
         payload = {k: v for k, v in payload.items() if k not in ("_auth_token", "_op_key")}
-    if not token and op_key:
-        import os
-        token = os.getenv("BFF_ADMIN_TOKEN")
-        if not token:
-            try:
-                with open('/tmp/bff_admin_token', 'r', encoding='utf-8') as fh:
-                    token = fh.read().strip()
-            except Exception:
-                token = None
     return proxy.create_promotion(payload, token, op_key=op_key)
 
 
 def admin_update_promotion(promotion_id, payload):
     token = payload.get("_auth_token") if isinstance(payload, dict) else None
-    if isinstance(payload, dict) and "_auth_token" in payload:
-        payload = {k: v for k, v in payload.items() if k != "_auth_token"}
-    return proxy.update_promotion(promotion_id, payload, token)
+    op_key = payload.get("_op_key") if isinstance(payload, dict) else None
+    if isinstance(payload, dict):
+        payload = {k: v for k, v in payload.items() if k not in ("_auth_token", "_op_key")}
+    return proxy.update_promotion(promotion_id, payload, token, op_key=op_key)
 
 
 def admin_apply_coupon_preview(code, **kwargs):

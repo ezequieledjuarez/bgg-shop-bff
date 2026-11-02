@@ -6,7 +6,7 @@ description: "Retrospective task list for CU-C04 in the BFF"
 
 **Input**: [`spec.md`](./spec.md) and [`plan.md`](./plan.md)
 **Prerequisites**: plan.md and spec.md
-**Retrospective status**: All listed implementation tasks are checked complete based on the ODD record; this file does not independently verify past implementation.
+**Status**: Closed for the local scope with limitations on 2026-10-30; see the [canonical spec](../../../specs/004-shopping-cart-as-built/spec.md). Historical tasks and later verification are distinguished below.
 
 ## Format: `[ID] [P?] [Story] Description`
 
@@ -106,4 +106,4 @@ No parallel task execution is inferred. Keep the existing OpenAPI contract and C
 
 ## Pending Verification
 
-- Database DDL/bootstrap was inspected but not executed against PostgreSQL. Guest-to-account cart merge was not live-verified, per the ODD record.
+- On 2026-10-30, [browser E2E](../../../bgg-shop-frontend/tests/e2e/cart-wishlist-purchase.spec.ts) verified guest cookie persistence, login merge and checkout through BFF/Core against disposable PostgreSQL, with simulated payment. Full clean-database bootstrap remains unverified.

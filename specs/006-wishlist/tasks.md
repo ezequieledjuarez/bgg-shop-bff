@@ -6,7 +6,7 @@ description: "Retrospective task list for CU-C06 in the BFF"
 
 **Input**: [`spec.md`](./spec.md) and [`plan.md`](./plan.md)
 **Prerequisites**: plan.md and spec.md
-**Retrospective status**: All listed implementation tasks are checked complete based on the ODD record; this file does not independently verify past implementation.
+**Status**: Closed for the local scope with limitations on 2026-10-30; see the [canonical spec](../../../specs/006-wishlist-as-built/spec.md). Historical tasks and later verification are distinguished below.
 
 ## Format: `[ID] [P?] [Story] Description`
 
@@ -107,4 +107,4 @@ No parallel task execution is inferred. Keep the existing OpenAPI contract and C
 
 ## Pending Verification
 
-- The additive Wishlist DDL and live authenticated Wishlist/purchase-confirmation flow were not run against PostgreSQL. OpenAPI parser validation was unavailable.
+- On 2026-10-30, [browser E2E](../../../bgg-shop-frontend/tests/e2e/cart-wishlist-purchase.spec.ts) verified authenticated Wishlist save and paid-order cleanup through BFF/Core and disposable PostgreSQL with a simulated provider. DDL was not applied to the active database. OpenAPI parser validation remains unavailable in the historical record.

@@ -1,10 +1,14 @@
+import hashlib
+import hmac
+import json
 import os
 import uuid
 import requests as _requests
+from datetime import datetime
 
 from flask import Flask, request
 from flask_cors import CORS
-from werkzeug.exceptions import HTTPException
+from werkzeug.exceptions import HTTPException, RequestEntityTooLarge
 from src.controllers import (
     add_cart_item as add_cart_item_controller,
     auth_request,
@@ -58,13 +62,27 @@ from src.controllers import (
     admin_update_promotion as admin_update_promotion_controller,
 )
 from src.controllers import admin_apply_coupon_preview as admin_apply_coupon_preview_controller
+from src.controllers.admin_coupons_controller import list_available_coupons as list_available_coupons_controller
+from src.controllers.admin_coupons_controller import preview_current_cart_coupon
+from src.controllers.admin_coupons_controller import (
+    admin_create_coupon as admin_create_coupon_controller,
+    admin_list_coupons as admin_list_coupons_controller,
+    admin_update_coupon as admin_update_coupon_controller,
+)
 from src.controllers.admin_gift_cards_controller import create_gift_card as admin_create_gift_card_controller
+from src.controllers.admin_products_controller import generate_stock_movement_id, get_stock_movement_status
 from src.controllers.credit_controller import get_credit, redeem_gift_card, checkout_credit
+from src.controllers.op_sessions_controller import list_sessions, manage_session
 from src import proxy as proxy_module
 from src import opkey_middleware
+from src.controllers.products_controller import product_categories as product_categories_controller
+from src.controllers.admin_audit_controller import admin_list_audit as admin_list_audit_controller
+from src.services import list_available_coupons, list_product_categories
+from src import catalog_cache
 from flask import jsonify
 
 app = Flask(__name__)
+_MAX_CATALOG_EVENT_BODY_BYTES = 1024
 allowed_origins = ("http://localhost:3000", "http://127.0.0.1:3000")
 def _dynamic_allow_headers(environ):
     # Echo requested headers if present; fallback to common headers
@@ -78,7 +96,7 @@ def _dynamic_allow_headers(environ):
 CORS(
     app,
     resources={r"/api/*": {"origins": allowed_origins}},
-    methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
+    methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allow_headers="*",
     expose_headers=["Location"],
     supports_credentials=True,
@@ -96,7 +114,7 @@ _opkey_before_request = app.before_request_funcs[None][-1]
 
 
 def _opkey_except_credit():
-    if request.path not in _CREDIT_PATHS:
+    if request.path not in _CREDIT_PATHS and request.path != "/api/v1/auth/logout":
         return _opkey_before_request()
 
 
@@ -214,9 +232,105 @@ def products():
     return products_controller(list_products)
 
 
+@app.route("/api/v1/product-categories", methods=["GET"])
+def product_categories():
+    return product_categories_controller(list_product_categories)
+
+
+@app.route("/api/v1/coupons", methods=["GET"])
+def available_coupons():
+    return list_available_coupons_controller(list_available_coupons)
+
+
 @app.route("/api/v1/games/<slug>", methods=["GET"])
 def game_detail(slug):
     return product_detail_controller(slug, get_product_detail)
+
+
+@app.route("/internal/v1/catalog-events", methods=["POST"])
+def receive_catalog_event():
+    request.max_content_length = _MAX_CATALOG_EVENT_BODY_BYTES
+    if (
+        request.content_length is not None
+        and request.content_length > _MAX_CATALOG_EVENT_BODY_BYTES
+    ):
+        return jsonify({"error": "invalid event"}), 413
+
+    secret = os.getenv("CATALOG_EVENTS_HMAC_SECRET") or os.getenv(
+        "OPKEY_INTERNAL_SECRET", ""
+    )
+    if not secret:
+        return jsonify({"error": "event processing unavailable"}), 503
+
+    try:
+        body = request.get_data(cache=True)
+    except RequestEntityTooLarge:
+        return jsonify({"error": "invalid event"}), 413
+    supplied_signature = request.headers.get("X-Catalog-Event-Signature", "")
+    expected_signature = "sha256=" + hmac.new(
+        secret.encode("utf-8"), body, hashlib.sha256
+    ).hexdigest()
+    if (
+        len(supplied_signature) != 71
+        or not supplied_signature.startswith("sha256=")
+        or any(character not in "0123456789abcdef" for character in supplied_signature[7:])
+    ):
+        return jsonify({"error": "unauthorized"}), 401
+    if not hmac.compare_digest(expected_signature, supplied_signature):
+        return jsonify({"error": "unauthorized"}), 401
+
+    if request.mimetype != "application/json":
+        return jsonify({"error": "invalid event"}), 400
+    try:
+        payload = json.loads(body)
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return jsonify({"error": "invalid event"}), 400
+    expected_fields = {
+        "event_id",
+        "event_type",
+        "occurred_at",
+        "aggregate_type",
+        "aggregate_id",
+    }
+    if not isinstance(payload, dict) or set(payload) != expected_fields:
+        return jsonify({"error": "invalid event"}), 400
+
+    event_type = payload.get("event_type")
+    if event_type not in {
+        "product.changed",
+        "stock.changed",
+        "promotion.changed",
+    }:
+        return jsonify({"error": "invalid event"}), 400
+    expected_aggregate = event_type.removesuffix(".changed")
+    if payload.get("aggregate_type") != expected_aggregate:
+        return jsonify({"error": "invalid event"}), 400
+    try:
+        uuid.UUID(payload["event_id"])
+        occurred_at = payload["occurred_at"]
+        if not isinstance(occurred_at, str):
+            raise ValueError
+        if not (occurred_at.endswith("Z") or occurred_at.endswith("+00:00")):
+            raise ValueError
+        parsed_at = datetime.fromisoformat(occurred_at.replace("Z", "+00:00"))
+        if parsed_at.utcoffset() is None or parsed_at.utcoffset().total_seconds() != 0:
+            raise ValueError
+    except (TypeError, ValueError, AttributeError):
+        return jsonify({"error": "invalid event"}), 400
+    aggregate_id = payload["aggregate_id"]
+    if (
+        not isinstance(aggregate_id, str)
+        or not aggregate_id.strip()
+        or len(aggregate_id) > 128
+    ):
+        return jsonify({"error": "invalid event"}), 400
+
+    try:
+        catalog_cache.invalidate_catalog_cache(payload["event_id"])
+    except Exception:
+        app.logger.error("Catalog cache invalidation failed.")
+        return jsonify({"error": "event processing unavailable"}), 503
+    return "", 204
 
 
 @app.route("/api/v1/games/<slug>/reviews", methods=["POST"])
@@ -227,6 +341,11 @@ def game_review(slug):
 @app.route("/api/v1/cart", methods=["GET"])
 def cart():
     return read_cart_controller(get_cart)
+
+
+@app.route("/api/v1/cart/coupons/preview", methods=["POST"])
+def preview_cart_coupon():
+    return preview_current_cart_coupon()
 
 
 @app.route("/api/v1/cart/items", methods=["POST"])
@@ -261,6 +380,11 @@ def wishlist_remove_item(bgg_id):
 
 @app.route("/api/v1/checkout", methods=["POST"])
 def purchase_checkout():
+    payload = request.get_json(silent=True)
+    if isinstance(payload, dict) and "coupon_code" in payload:
+        from flask import g
+
+        g.checkout_coupon_code = payload.pop("coupon_code")
     return checkout_controller(checkout)
 
 
@@ -327,6 +451,22 @@ def login():
     return response, status
 
 
+@app.route("/api/v1/auth/logout", methods=["POST"])
+def logout():
+    op_key = request.headers.get("X-Op-Key")
+    if op_key:
+        try:
+            proxy_module.revoke_operation_key(op_key)
+        except proxy_module.UpstreamError:
+            response = app.make_response(({"error": "Operation key revocation could not be confirmed"}, 502))
+            response.headers["Cache-Control"] = "no-store"
+            return response
+    response = app.make_response(("", 204))
+    response.delete_cookie('refresh_token', path='/', secure=app.config.get('CART_COOKIE_SECURE', True), httponly=True, samesite='Strict')
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
 @app.route("/api/v1/auth/refresh", methods=["POST"])
 def refresh():
     """Proxy endpoint: read refresh token from HttpOnly cookie, call core refresh, rotate cookie.
@@ -368,6 +508,21 @@ def refresh():
 
 
 # Admin management endpoints (minimal scaffolding)
+@app.route("/api/v1/admin/op-sessions", methods=["GET"])
+def admin_op_sessions():
+    return list_sessions()
+
+
+@app.route("/api/v1/admin/op-sessions/<session_id>/revoke", methods=["POST"])
+def admin_op_session_revoke(session_id):
+    return manage_session(session_id, "REVOKE")
+
+
+@app.route("/api/v1/admin/op-sessions/<session_id>/expire", methods=["POST"])
+def admin_op_session_expire(session_id):
+    return manage_session(session_id, "EXPIRE")
+
+
 @app.route("/api/v1/admin/gift-cards", methods=["POST"])
 def admin_gift_cards_create():
     return admin_create_gift_card_controller()
@@ -393,9 +548,19 @@ def admin_products_get(product_id):
     return admin_get_product(product_id)
 
 
-@app.route("/api/v1/admin/products/<product_id>/variants/<variant_id>/adjust-stock", methods=["POST"])
-def admin_products_adjust_stock(product_id, variant_id):
-    return admin_adjust_variant_stock(product_id, variant_id)
+@app.route("/api/v1/admin/products/<product_id>/stock", methods=["POST"])
+def admin_products_adjust_stock(product_id):
+    return admin_adjust_variant_stock(product_id)
+
+
+@app.route("/api/v1/admin/stock-movement-ids", methods=["POST"])
+def admin_stock_movement_id_generate():
+    return generate_stock_movement_id()
+
+
+@app.route("/api/v1/admin/stock-movements/<movement_id>", methods=["GET"])
+def admin_stock_movement_status(movement_id):
+    return get_stock_movement_status(movement_id)
 
 
 # Admin promotions
@@ -414,7 +579,28 @@ def admin_promotions_update(promotion_id):
     return admin_update_promotion_controller(promotion_id)
 
 
+# Admin audit
+@app.route("/api/v1/admin/audit", methods=["GET"])
+def admin_audit_list():
+    return admin_list_audit_controller()
+
+
 # Admin coupons
+@app.route("/api/v1/admin/coupons", methods=["GET"])
+def admin_coupons_list():
+    return admin_list_coupons_controller()
+
+
+@app.route("/api/v1/admin/coupons", methods=["POST"])
+def admin_coupons_create():
+    return admin_create_coupon_controller()
+
+
+@app.route("/api/v1/admin/coupons/<int:coupon_id>", methods=["PATCH"])
+def admin_coupons_update(coupon_id):
+    return admin_update_coupon_controller(coupon_id)
+
+
 @app.route("/api/v1/admin/coupons/<code>/apply", methods=["POST"])
 def admin_coupons_apply(code):
     return admin_apply_coupon_preview_controller(code)

@@ -1,5 +1,6 @@
 from dataclasses import asdict, dataclass
 from typing import Any
+from uuid import UUID
 
 
 @dataclass(frozen=True)
@@ -11,6 +12,7 @@ class ProductQuery:
     min_players: Any
     max_players: Any
     category_id: Any
+    category_name: Any
     price_min: Any
     price_max: Any
 
@@ -24,6 +26,7 @@ class ProductQuery:
             min_players=args.get("min_players"),
             max_players=args.get("max_players"),
             category_id=args.get("category_id"),
+            category_name=args.get("category_name"),
             price_min=args.get("price_min"),
             price_max=args.get("price_max"),
         )
@@ -306,6 +309,8 @@ class AdminUpdateProductDto:
     def from_payload(cls, payload: Any) -> "AdminUpdateProductDto":
         if not isinstance(payload, dict):
             raise ValueError("Request body must be a JSON object")
+        if "quantity" in payload:
+            raise ValueError("quantity must be changed through inventory operations")
         return cls(
             bgg_id=payload.get("bggId") or payload.get("bgg_id"),
             name=payload.get("name"),
@@ -364,13 +369,7 @@ class AdminUpdateProductDto:
                 raise ValueError("price must be greater than or equal to 0")
             data["price"] = price
         if self.quantity is not None:
-            try:
-                quantity = int(self.quantity)
-            except (TypeError, ValueError):
-                raise ValueError("quantity must be an integer")
-            if quantity < 0:
-                raise ValueError("quantity must be greater than or equal to 0")
-            data["quantity"] = quantity
+            raise ValueError("quantity must be changed through inventory operations")
 
         def _opt_int(v, name):
             if v in (None, ''):
@@ -426,19 +425,25 @@ class AdminUpdateProductDto:
 
 @dataclass(frozen=True)
 class AdjustStockDto:
-    new_stock: Any
+    movement_id: Any
+    direction: Any
+    quantity: Any
 
     @classmethod
     def from_payload(cls, payload: Any) -> "AdjustStockDto":
         if not isinstance(payload, dict):
             raise ValueError("Request body must be a JSON object")
-        return cls(new_stock=payload.get("new_stock"))
+        if set(payload) != {"movement_id", "direction", "quantity"}:
+            raise ValueError("Request body must contain movement_id, direction and quantity")
+        return cls(movement_id=payload.get("movement_id"), direction=payload.get("direction"), quantity=payload.get("quantity"))
 
-    def validate(self) -> int:
+    def validate(self) -> tuple[str, str, int]:
         try:
-            new_stock_int = int(self.new_stock)
-        except (TypeError, ValueError):
-            raise ValueError("new_stock must be an integer")
-        if new_stock_int < 0:
-            raise ValueError("new_stock must be greater than or equal to 0")
-        return new_stock_int
+            movement_id = str(UUID(self.movement_id))
+        except (ValueError, TypeError, AttributeError):
+            raise ValueError("movement_id must be a UUID") from None
+        if self.direction not in ("IN", "OUT"):
+            raise ValueError("direction must be IN or OUT")
+        if type(self.quantity) is not int or not 1 <= self.quantity <= 2147483647:
+            raise ValueError("quantity must be a positive 32-bit integer")
+        return movement_id, self.direction, self.quantity

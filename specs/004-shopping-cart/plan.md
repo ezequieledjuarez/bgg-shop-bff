@@ -82,9 +82,9 @@ ODD-recorded BFF verification:
 - BFF `git diff --check` — clean.
 - OpenAPI YAML parsing and cart/inventory route/field checks — passed, as reported in the ODD record.
 
-- Pending verification: Database DDL/bootstrap was inspected but not executed against PostgreSQL. Guest-to-account cart merge was not live-verified, per the ODD record.
+- Later verification: [isolated browser E2E](../../../bgg-shop-frontend/tests/e2e/cart-wishlist-purchase.spec.ts) passed through BFF/Core with disposable PostgreSQL and simulated payment. Full clean-database bootstrap remains unverified.
 
-This plan is retrospective. It does not claim these implementation checks were rerun while generating this document. Behavior not verified by the cited ODD record remains pending.
+This plan is retrospective; the later verification is recorded separately from the historical ODD checks.
 
 ## Complexity Tracking
 

@@ -74,7 +74,7 @@ bgg-shop-bff/
 
 Historical implementation, commit, and verification claims are sourced from [`odd/tasks/cu-c06-wishlist.md`](../../../odd/tasks/cu-c06-wishlist.md). Root documentation evidence, where present:
 
-- No CU-C06 root documentation file is listed in this source set.
+- Canonical closure: [Wishlist as-built spec](../../../specs/006-wishlist-as-built/spec.md).
 
 ODD-recorded BFF verification:
 
@@ -83,9 +83,9 @@ ODD-recorded BFF verification:
 - Independent verification and parent spot-check passed; `git diff --check` passed.
 - OpenAPI parser/validator was unavailable, as recorded in the ODD document.
 
-- Pending verification: The additive Wishlist DDL and live authenticated Wishlist/purchase-confirmation flow were not run against PostgreSQL. OpenAPI parser validation was unavailable.
+- Later verification: [isolated browser E2E](../../../bgg-shop-frontend/tests/e2e/cart-wishlist-purchase.spec.ts) passed through BFF/Core with disposable PostgreSQL and simulated payment. Active-database DDL application remains pending authorization; OpenAPI parser validation was unavailable in the historical record.
 
-This plan is retrospective. It does not claim these implementation checks were rerun while generating this document. Behavior not verified by the cited ODD record remains pending.
+This plan is retrospective; the later verification is recorded separately from the historical ODD checks.
 
 ## Complexity Tracking
 

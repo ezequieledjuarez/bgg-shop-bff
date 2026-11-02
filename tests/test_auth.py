@@ -42,6 +42,13 @@ def test_auth_transport_never_logs_passwords_or_upstream_details(failure, capsys
     assert secret not in captured.out + captured.err + caplog.text + str(file_open.mock_calls)
 
 
+def test_auth_transport_does_not_follow_redirects():
+    response = MagicMock(status_code=307)
+    with patch("requests.post", return_value=response) as post, pytest.raises(UpstreamError):
+        _auth_request("mutation Login { login }", {"password": "synthetic-password"})
+    assert post.call_args.kwargs["allow_redirects"] is False
+
+
 def test_register_returns_created_account_without_session():
     with patch("app.register_account", return_value={"user": VALID_USER}):
         response = app.test_client().post(
@@ -70,6 +77,61 @@ def test_login_returns_account_and_session():
 
     assert response.status_code == 200
     assert response.get_json()["session"] == VALID_SESSION
+
+
+def test_login_returns_optional_operation_key_without_caching():
+    core_response = {
+        "data": {"login": {
+            "user": {"id": "1", "email": "player@example.test", "firstName": "Test",
+                     "lastName": "Player", "isActive": True},
+            "tokens": {"token": "access-token", "refreshToken": "refresh-token", "csrfToken": None,
+                       "opKey": "synthetic-operation-key", "opKeyExpiresAt": "2030-01-01T00:00:00Z",
+                       "ops": ["GET:/api/v1/admin/products"]},
+            "errors": [],
+        }},
+    }
+    with patch("src.proxy._auth_request", return_value=core_response) as request:
+        response = app.test_client().post(
+            "/api/v1/auth/login", json={"email": "player@example.test", "password": "safe-password"}
+        )
+    assert response.status_code == 200
+    assert response.get_json()["session"]["op_key"] == "synthetic-operation-key"
+    assert response.get_json()["session"]["op_key_expires_at"] == "2030-01-01T00:00:00Z"
+    assert response.get_json()["session"]["ops"] == ["GET:/api/v1/admin/products"]
+    assert "no-store" in response.headers.get("Cache-Control", "")
+    query = request.call_args.args[0]
+    assert "opKey" in query and "opKeyExpiresAt" in query and "ops" in query
+
+
+def test_logout_revokes_optional_operation_key(monkeypatch):
+    secret = "synthetic-internal-secret-0123456789-abcdef"
+    monkeypatch.setenv("OPKEY_INTERNAL_SECRET", secret)
+    response = MagicMock(status_code=200)
+    response.json.return_value = {"revoked": 1}
+    with patch("requests.post", return_value=response) as post:
+        result = app.test_client().post("/api/v1/auth/logout", headers={"X-Op-Key": "synthetic-op-key"})
+    assert result.status_code == 204
+    assert post.call_count == 1
+    assert post.call_args.kwargs["json"] == {"op_key": "synthetic-op-key", "reason": "logout"}
+    assert post.call_args.kwargs["headers"] == {"X-Internal-Secret": secret}
+    assert post.call_args.kwargs["allow_redirects"] is False
+    assert "no-store" in result.headers.get("Cache-Control", "")
+
+
+def test_logout_without_operation_key_does_not_call_core():
+    with patch("requests.post") as post:
+        result = app.test_client().post("/api/v1/auth/logout")
+    assert result.status_code == 204
+    assert "refresh_token=" in result.headers.get("Set-Cookie", "")
+    post.assert_not_called()
+
+
+def test_logout_does_not_claim_revocation_when_core_fails(monkeypatch):
+    monkeypatch.setenv("OPKEY_INTERNAL_SECRET", "synthetic-internal-secret-0123456789-abcdef")
+    with patch("requests.post", side_effect=requests.Timeout("synthetic-private-error")):
+        result = app.test_client().post("/api/v1/auth/logout", headers={"X-Op-Key": "synthetic-op-key"})
+    assert result.status_code == 502
+    assert b"synthetic-private-error" not in result.data
 
 
 def test_auth_rejects_non_object_json():

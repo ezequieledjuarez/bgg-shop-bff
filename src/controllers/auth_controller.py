@@ -8,7 +8,9 @@ def auth_request(operation, success_status):
     try:
         payload = AuthRequest.from_payload(request.get_json(silent=True))
         result = AuthResponse.from_dict(operation(payload.payload))
-        return jsonify(result.to_dict()), success_status
+        response = jsonify(result.to_dict())
+        response.headers["Cache-Control"] = "no-store"
+        return response, success_status
     except ValueError as exc:
         return jsonify({
             "errors": [{"code": "INVALID", "message": str(exc)}],

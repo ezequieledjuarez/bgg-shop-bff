@@ -4,6 +4,13 @@ from ..dtos import ProductPageDto, ProductQuery
 from ..proxy import UpstreamError
 
 
+def product_categories(list_categories_service):
+    try:
+        return jsonify(list_categories_service()), 200
+    except UpstreamError:
+        return jsonify({"error": "upstream GraphQL request failed"}), 502
+
+
 def products(list_products_service):
     query = ProductQuery.from_request_args(request.args)
     try:

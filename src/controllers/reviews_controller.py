@@ -23,16 +23,17 @@ def create_review(slug, service):
     except ValueError as exc:
         return jsonify({"errors": [{"code": "INVALID", "message": str(exc)}]}), 400
     except UpstreamError as exc:
-        statuses = {
-            "UNAUTHENTICATED": 401,
-            "PRODUCT_NOT_FOUND": 404,
-            "REVIEW_ALREADY_EXISTS": 409,
-            "RATING_OUT_OF_RANGE": 400,
-            "BODY_REQUIRED": 400,
-            "BODY_TOO_LONG": 400,
+        public_errors = {
+            "UNAUTHENTICATED": (401, "Authentication is required."),
+            "PRODUCT_NOT_FOUND": (404, "The requested game does not exist."),
+            "REVIEW_ALREADY_EXISTS": (409, "You already reviewed this game."),
+            "RATING_OUT_OF_RANGE": (400, "Rating must be between 1 and 5."),
+            "BODY_REQUIRED": (400, "Review text is required."),
+            "BODY_TOO_LONG": (400, "Review text must not exceed 2000 characters."),
         }
-        if exc.code in statuses:
-            return jsonify({"errors": [{"code": exc.code, "message": str(exc)}]}), statuses[exc.code]
+        if exc.code in public_errors:
+            status, message = public_errors[exc.code]
+            return jsonify({"errors": [{"code": exc.code, "message": message}]}), status
         return jsonify({
             "errors": [{
                 "code": "UPSTREAM_ERROR",

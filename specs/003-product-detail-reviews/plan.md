@@ -2,6 +2,7 @@
 
 **Branch**: `CU-06-wishlist` | **Date**: 2026-10-21 | **Spec**: [`spec.md`](./spec.md)
 **Input**: Feature specification from `/specs/003-product-detail-reviews/spec.md`
+**Status**: Closed with scope limitations on 2026-10-30; see the [canonical closure](../../../specs/003-product-detail-reviews-as-built/spec.md).
 
 ## Summary
 
@@ -80,7 +81,7 @@ ODD-recorded BFF verification:
 
 - BFF `python -m pytest` — 19 passed, as recorded in the CU-C03 ODD verification.
 
-- Pending verification: PostgreSQL parser validation for review persistence remains pending because `psql` is unavailable, as recorded in the CU-C03 ODD document.
+- The historical ODD record did not include PostgreSQL parser validation. A later isolated validation is recorded in [Core tasks](../../../bgg-shop-core/specs/003-product-detail-reviews/tasks.md).
 
 This plan is retrospective. It does not claim these implementation checks were rerun while generating this document. Behavior not verified by the cited ODD record remains pending.
 

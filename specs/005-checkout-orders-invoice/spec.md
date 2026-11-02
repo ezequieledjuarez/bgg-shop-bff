@@ -1,7 +1,7 @@
 # BFF Functional Specification: Checkout, Orders, and Invoice (As-Built)
 
 **Input**: CU-C05
-**Status**: As-built / retrospective
+**Status**: Closed for the local, non-production scope with an accepted exception on 2026-10-30; see the [canonical spec](../../../specs/005-checkout-orders-invoice-as-built/spec.md).
 **Scope**: The BFF REST boundary for checkout, payment confirmation/retry, order history/detail, and invoice retrieval. The full buyer behavior and sandbox limits are in the [canonical CU-C05 specification](../../../specs/005-checkout-orders-invoice-as-built/spec.md).
 
 ## BFF responsibilities

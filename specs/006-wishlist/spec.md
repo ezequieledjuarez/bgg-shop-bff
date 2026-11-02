@@ -1,7 +1,7 @@
 # BFF Functional Specification: Wishlist
 
 **Input**: CU-C06
-**Status**: As-built
+**Status**: Closed for the local scope with limitations on 2026-10-30; see the [canonical spec](../../../specs/006-wishlist-as-built/spec.md).
 **Scope**: Authenticated REST operations that adapt Core's Wishlist GraphQL query and mutations.
 
 ## REST contract

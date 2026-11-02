@@ -6,7 +6,7 @@ description: "Retrospective task list for CU-C03 in the BFF"
 
 **Input**: [`spec.md`](./spec.md) and [`plan.md`](./plan.md)
 **Prerequisites**: plan.md and spec.md
-**Retrospective status**: All listed implementation tasks are checked complete based on the ODD record; this file does not independently verify past implementation.
+**Status**: Closed with scope limitations on 2026-10-30; see the [canonical closure](../../../specs/003-product-detail-reviews-as-built/spec.md). Checked tasks do not imply unreported verification.
 
 ## Format: `[ID] [P?] [Story] Description`
 
@@ -51,6 +51,8 @@ All task paths are relative to the `bgg-shop-bff` repository root.
 **Purpose**: Capture final contract, test, error-handling, and documentation work evidenced for this BFF feature.
 
 - [x] T005 [US2] Map known review outcomes and sanitize unexpected upstream errors; maintain product/review contract and focused tests.
+- [x] T006 [US2] Sanitize known Core review messages, align error schemas and bearer security in [OpenAPI](../openapi.yaml), and cover the [review controller](../../src/controllers/reviews_controller.py) in [review tests](../../tests/test_reviews.py); regenerate [Frontend API types](../../../bgg-shop-frontend/src/types/generated/bff-api.d.ts).
+- [x] T007 [US2] Restart the local BFF and verify rejected invalid authentication; validate authenticated review creation and duplicate mapping through an isolated BFF/Core stack using [browser E2E](../../../bgg-shop-frontend/tests/e2e/product-reviews.spec.ts).
 
 ## Dependencies & Execution Order
 
@@ -101,7 +103,9 @@ No parallel task execution is inferred. Keep the existing OpenAPI contract and C
 ## Retrospective Evidence
 
 - BFF `python -m pytest` — 19 passed, as recorded in the CU-C03 ODD verification.
+- On 2026-10-30, `python -m pytest -q tests/test_reviews.py tests/test_products.py tests/test_services_openapi_contract.py` passed (39 tests, 28 warnings). This check uses mocks for Core-facing behavior.
+- On 2026-10-30, the active local BFF was restarted; its unauthenticated probes rejected both an invalid bearer and OpKey alone with HTTP 401. An isolated BFF using the same source subsequently returned 201 for an authenticated pending review and 409 for its duplicate. The restart required a forced stop after the graceful timeout.
 
 ## Pending Verification
 
-- PostgreSQL parser validation for review persistence remains pending because `psql` is unavailable, as recorded in the CU-C03 ODD document.
+- The historical ODD run did not validate the review DDL in PostgreSQL. Later isolated DDL and authenticated end-to-end checks are recorded in [Core tasks](../../../bgg-shop-core/specs/003-product-detail-reviews/tasks.md). The active database was not written during the latest run.

@@ -6,7 +6,7 @@ description: "Retrospective task list for CU-C05 in the BFF"
 
 **Input**: [`spec.md`](./spec.md) and [`plan.md`](./plan.md)
 **Prerequisites**: plan.md and spec.md
-**Retrospective status**: All listed implementation tasks are checked complete based on the ODD record; this file does not independently verify past implementation.
+**Status**: Closed for the local, non-production scope with an accepted exception on 2026-10-30; see the [canonical spec](../../../specs/005-checkout-orders-invoice-as-built/spec.md). Historical and later verification are distinguished below.
 
 ## Format: `[ID] [P?] [Story] Description`
 
@@ -106,4 +106,4 @@ No parallel task execution is inferred. Keep the existing OpenAPI contract and C
 
 ## Pending Verification
 
-- Payment with the sandbox buyer, paid transition, stock decrement, invoice persistence/PDF download, cart quantity clearing, and full guest-cart merge remain unverified. Full import_catalog.sql validation on a clean PostgreSQL is also unverified in the ODD record.
+- An isolated browser/BFF/Core/PostgreSQL flow with simulated payment verified paid transition, stock decrement, invoice/PDF, cart cleanup, and guest merge on 2026-10-30; see the [integration record](../../../odd/tasks/cart-checkout-wishlist-validation.md). The real provider round trip and complete clean-database bootstrap remain unverified. The focused BFF order suite passed 48 tests with 57 warnings on 2026-10-30.

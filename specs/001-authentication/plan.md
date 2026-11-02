@@ -3,6 +3,8 @@
 **Branch**: `CU-06-wishlist` | **Date**: 2026-10-21 | **Spec**: [`spec.md`](./spec.md)
 **Input**: Feature specification from `/specs/001-authentication/spec.md`
 
+**Status**: Closed; implemented and validated with scope limitations (2026-10-30).
+
 ## Summary
 
 The BFF exposes registration and login over REST, validates and reshapes payloads, forwards GraphQL operations to Core, maps user/session fields, and returns generic upstream errors. Login also forwards a guest-cart identifier when present and clears its cookie after success.
@@ -80,6 +82,8 @@ ODD-recorded BFF verification:
 - `python -m pytest` — 19 passed.
 - `python -m compileall -q app.py src tests` — passed.
 - `git diff --check` — passed.
+
+Current focused check on 2026-10-30: `python -m pytest -q -p no:cacheprovider tests/test_auth.py tests/test_cart.py --tb=short` — 31 passed, 28 warnings; dependencies are simulated.
 
 - No BFF-specific pending verification is recorded in the ODD task file; browser session behavior and Core persistence are outside this BFF-only plan.
 
