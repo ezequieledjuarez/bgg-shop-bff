@@ -109,14 +109,13 @@ def admin_moderate_review(review_id, service):
         )
 
     cache_refresh_pending = False
-    if action == "ACCEPT":
-        for _ in range(2):
-            try:
-                catalog_cache.invalidate_catalog_cache(review_id)
-                cache_refresh_pending = False
-                break
-            except Exception:
-                cache_refresh_pending = True
+    for _ in range(2):
+        try:
+            catalog_cache.invalidate_catalog_cache(review_id)
+            cache_refresh_pending = False
+            break
+        except Exception:
+            cache_refresh_pending = True
 
     return _moderation_response(
         {
