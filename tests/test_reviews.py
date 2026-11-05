@@ -537,6 +537,98 @@ def test_admin_review_action_maps_non_transition_core_errors_to_sanitized_502(
 
 
 @pytest.mark.parametrize(
+    ("scenario", "action"),
+    [
+        ("unknown review ID", "DELETE"),
+        ("non-delete action on a soft-deleted review", "ACCEPT"),
+    ],
+)
+def test_admin_review_action_maps_review_not_found_scenarios_to_sanitized_404(
+    scenario,
+    action,
+):
+    private_details = (
+        f"private Core detail for {scenario} at "
+        "http://core.internal/review/501 with synthetic-token-value"
+    )
+    with patch(
+        "src.proxy._graphql_request",
+        side_effect=[
+            _moderation_identity(is_staff=True),
+            {
+                "errors": [{
+                    "message": private_details,
+                    "extensions": {"code": "REVIEW_NOT_FOUND"},
+                }],
+            },
+        ],
+    ) as upstream, patch("src.catalog_cache.invalidate_catalog_cache") as invalidate:
+        response = app.test_client().post(
+            MODERATION_ACTION,
+            json={"action": action},
+            headers=MODERATION_AUTH,
+        )
+
+    body = response.get_data(as_text=True)
+    assert response.status_code == 404
+    assert response.headers["Cache-Control"] == "no-store"
+    assert response.get_json() == {"error": "Review not found."}
+    for private_value in (
+        "private Core detail",
+        "http://core.internal",
+        "synthetic-token-value",
+        private_details,
+    ):
+        assert private_value not in body
+    assert len(_action_calls(upstream)) == 1
+    invalidate.assert_not_called()
+
+
+def test_admin_review_repeated_delete_returns_idempotent_success():
+    delete_result = _moderation_action_payload(
+        status="ACCEPTED",
+        deleted=True,
+        publicly_visible=False,
+    )
+    with patch(
+        "src.proxy._graphql_request",
+        side_effect=[
+            _moderation_identity(is_staff=True),
+            delete_result,
+            _moderation_identity(is_staff=True),
+            delete_result,
+        ],
+    ) as upstream, patch(
+        "src.catalog_cache.invalidate_catalog_cache",
+    ) as invalidate:
+        client = app.test_client()
+        responses = [
+            client.post(
+                MODERATION_ACTION,
+                json={"action": "DELETE"},
+                headers=MODERATION_AUTH,
+            )
+            for _ in range(2)
+        ]
+
+    expected = {
+        "review_id": 501,
+        "status": "ACCEPTED",
+        "deleted": True,
+        "publicly_visible": False,
+        "cache_refresh_pending": False,
+    }
+    assert [response.status_code for response in responses] == [200, 200]
+    assert [response.get_json() for response in responses] == [expected, expected]
+    assert len(_action_calls(upstream)) == 2
+    assert all(
+        call.args[1] == {"reviewId": "501", "action": "DELETE"}
+        for call in _action_calls(upstream)
+    )
+    assert invalidate.call_count == 2
+
+
+@pytest.mark.parametrize(
     ("action", "status", "deleted", "publicly_visible"),
     [
         ("ACCEPT", "ACCEPTED", False, True),
@@ -620,6 +712,7 @@ def test_admin_review_retry_exhaustion_preserves_committed_success_as_pending(
             headers=MODERATION_AUTH,
         )
 
+    body = response.get_data(as_text=True)
     assert response.status_code == 200
     assert response.headers["Cache-Control"] == "no-store"
     assert response.get_json() == {
@@ -629,6 +722,7 @@ def test_admin_review_retry_exhaustion_preserves_committed_success_as_pending(
         "publicly_visible": publicly_visible,
         "cache_refresh_pending": True,
     }
+    assert "synthetic cache outage" not in body
     assert invalidate.call_count == 2
     assert len(_action_calls(upstream)) == 1
 
