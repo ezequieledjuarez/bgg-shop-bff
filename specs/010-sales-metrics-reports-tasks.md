@@ -26,3 +26,4 @@ Branch: `010-sales-metrics-reports`. Local validation only.
 | B-1 | `pytest -q tests/test_admin_sales_metrics.py` from BFF | COLLECTION ERROR: `ModuleNotFoundError: No module named 'app'`; the console entrypoint did not add the BFF root to the import path. | 2026-11-05 |
 | B-1 | `PYTHONPATH=. .venv/bin/pytest -q tests/test_admin_sales_metrics.py` | COLLECTION ERROR: the BFF virtual environment lacks `redis`, imported by `app.py`. No packages were installed. | 2026-11-05 |
 | B-1 | `PYTHONPATH=. pytest -q tests/test_admin_sales_metrics.py` | EXPECTED RED: collection succeeded; 20 failed, 20 warnings. All responses were 405 from the generic OPTIONS-only catch-all because the metrics/category GET routes are not registered. All GraphQL requests were mocked; no database or network access. | 2026-11-05 |
+| B-1 | Work-unit commits | BFF `6f40f5ef54b0e480b6520841ad329f214e702e34`; orchestrator `ecedb1752c11c12e7aee331fd0210c721c22e946` | 2026-11-05 |
