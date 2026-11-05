@@ -194,6 +194,31 @@ Checkout accepts `shipping_mode` (`standard` or `pickup`) and an optional `addre
 
 Order responses use `snake_case` and include snapshot line prices, currency, shipping fields, payment state and its provider detail, and invoice number/date/total when issued. Missing or invalid credentials return `401`; invalid request data returns `400`; an unowned or missing order returns `404`; payment configuration and Core failures are reported as `503` and `502` respectively. The invoice route validates UUIDs before constructing the Core URL, forwards the same bearer token, streams `application/pdf` with the upstream attachment header, and preserves Core `404` responses.
 
+### Métricas de ventas (Admin)
+
+Las rutas `GET /api/v1/admin/sales-metrics` y
+`GET /api/v1/admin/sales-metrics/categories` requieren un usuario activo con
+rol staff o superuser. Ambas respuestas son `no-store`.
+
+La ruta de métricas acepta `from` y `to` como instantes ISO-8601 con zona
+horaria, y acepta parámetros repetidos `category` y `product_id`. Se deben
+enviar ambos límites de fecha o ninguno; un límite faltante responde `400`
+con `code: INVALID` y `field` indicando el parámetro faltante. Si se omiten
+ambos, se usa el rango de los últimos 30 días. El rango máximo es de 366 días
+y es semiabierto `[from, to)` en UTC.
+
+La respuesta usa `snake_case` e incluye `revenue_total`, `orders_count`,
+`top_products`, `orders_by_dispatch_status`, `orders_by_payment_status` y
+`revenue_by_day`. El ingreso suma los subtotales históricos de líneas de
+órdenes pagadas por `paid_at`; los conteos de estado usan `created_at`. Los
+filtros de categoría son coincidencias exactas con el valor almacenado y los
+productos se identifican por BGG ID. La ruta de categorías devuelve los
+valores distintos almacenados en `product_boardgame.category`.
+
+Las respuestas de validación usan `400`, la falta de autenticación `401`, un
+rol no autorizado `403` y los errores no reconocidos del Core se exponen como
+`502` genérico sin detalles internos.
+
 ---
 
 ## 🛠️ Tech Stack

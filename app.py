@@ -77,6 +77,10 @@ from src import proxy as proxy_module
 from src import opkey_middleware
 from src.controllers.products_controller import product_categories as product_categories_controller
 from src.controllers.admin_audit_controller import admin_list_audit as admin_list_audit_controller
+from src.controllers.admin_sales_controller import (
+    get_admin_sales_categories as admin_sales_categories_controller,
+    get_admin_sales_metrics as admin_sales_metrics_controller,
+)
 from src.services import list_available_coupons, list_product_categories
 from src import catalog_cache
 from flask import jsonify
@@ -583,6 +587,16 @@ def admin_promotions_update(promotion_id):
 @app.route("/api/v1/admin/audit", methods=["GET"])
 def admin_audit_list():
     return admin_list_audit_controller()
+
+
+@app.route("/api/v1/admin/sales-metrics", methods=["GET"])
+def admin_sales_metrics():
+    return admin_sales_metrics_controller()
+
+
+@app.route("/api/v1/admin/sales-metrics/categories", methods=["GET"])
+def admin_sales_categories():
+    return admin_sales_categories_controller()
 
 
 # Admin coupons

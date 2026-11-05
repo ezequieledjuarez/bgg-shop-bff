@@ -204,6 +204,14 @@ def admin_list_audit(filters, token=None, op_key=None):
     return proxy.list_admin_audit(filters, token, op_key=op_key)
 
 
+def admin_get_sales_metrics(filters, token=None, op_key=None):
+    return proxy.get_admin_sales_metrics(filters, token, op_key=op_key)
+
+
+def admin_get_sales_categories(token=None, op_key=None):
+    return proxy.get_admin_sales_categories(token, op_key=op_key)
+
+
 def admin_list_coupons(token=None, op_key=None):
     return proxy.list_admin_coupons(token, op_key=op_key)
 
