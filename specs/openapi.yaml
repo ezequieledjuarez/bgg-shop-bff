@@ -1314,6 +1314,167 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+  /api/v1/admin/reviews:
+    get:
+      tags:
+      - Administration
+      summary: List reviews for moderation
+      description: >-
+        Returns non-deleted reviews in PENDING, ACCEPTED, or REJECTED state.
+        Omitting status returns all three. Order is created_at DESC,
+        then review id DESC. page is one-based, page_size defaults to 50 and
+        is capped at 100. Responses are not cacheable. Requires an authenticated
+        active staff or superuser identity; an operation key alone is insufficient.
+      operationId: adminListReviews
+      security:
+      - BearerAuth: []
+      parameters:
+      - name: status
+        in: query
+        required: false
+        description: Optional single moderation-state filter.
+        schema:
+          $ref: '#/components/schemas/ReviewModerationStatus'
+        example: PENDING
+      - name: page
+        in: query
+        required: false
+        description: One-based page number.
+        schema:
+          type: integer
+          minimum: 1
+          default: 1
+      - name: page_size
+        in: query
+        required: false
+        description: Results per page; defaults to 50 and cannot exceed 100.
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 100
+          default: 50
+      responses:
+        '200':
+          description: Moderation queue page; an empty queue returns an empty items array.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/AdminNoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminReviewPage'
+              example:
+                items:
+                - review_id: 501
+                  game_bgg_id: 13
+                  game_name: Catan
+                  rating: 5
+                  body: Great game
+                  created_at: '2026-11-05T16:30:00Z'
+                  status: PENDING
+                page: 1
+                page_size: 50
+                total: 1
+                total_pages: 1
+        '400':
+          $ref: '#/components/responses/ReviewModerationInvalidRequest'
+        '401':
+          $ref: '#/components/responses/ReviewModerationUnauthorized'
+        '403':
+          $ref: '#/components/responses/ReviewModerationForbidden'
+        '502':
+          $ref: '#/components/responses/ReviewModerationUpstreamFailure'
+  /api/v1/admin/reviews/{review_id}/actions:
+    post:
+      tags:
+      - Administration
+      summary: Accept, reject, or soft-delete a review
+      description: >-
+        Applies one moderation action using Core as the authority for current
+        state. ACCEPT on an accepted review and REJECT on a rejected review are
+        successful idempotent no-ops. Repeated DELETE is also idempotent success.
+        Core locks the review row and serializes actions; the last serialized
+        action is final. An unknown ID or a non-delete action on a soft-deleted
+        review returns 404. Return 409 only for a genuinely invalid transition,
+        not for a stale queue view or concurrent action. DELETE retains the row,
+        sets its separate deleted marker, excludes it from public visibility and
+        aggregation, and reports deleted=true. If Core commits but cache
+        invalidation remains pending after bounded retries, the response still
+        reports success and sets cache_refresh_pending=true; public detail may
+        be temporarily stale until refresh succeeds. Requires an authenticated
+        active staff or superuser identity; an operation key alone is insufficient.
+      operationId: adminModerateReview
+      security:
+      - BearerAuth: []
+      parameters:
+      - name: review_id
+        in: path
+        required: true
+        description: Existing product_review identifier.
+        schema:
+          type: integer
+          minimum: 1
+        example: 501
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ModerateReviewRequest'
+            examples:
+              accept:
+                value: {action: ACCEPT}
+              reject:
+                value: {action: REJECT}
+              softDelete:
+                value: {action: DELETE}
+      responses:
+        '200':
+          description: >-
+            Action applied or already in the requested state. A committed Core
+            mutation remains successful even if cache refresh is pending.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/AdminNoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ModerateReviewResponse'
+              examples:
+                accepted:
+                  value:
+                    review_id: 501
+                    status: ACCEPTED
+                    deleted: false
+                    publicly_visible: true
+                    cache_refresh_pending: false
+                deleted:
+                  value:
+                    review_id: 501
+                    status: ACCEPTED
+                    deleted: true
+                    publicly_visible: false
+                    cache_refresh_pending: false
+                committedButRefreshPending:
+                  summary: Mutation committed; cache refresh must be retried
+                  value:
+                    review_id: 501
+                    status: ACCEPTED
+                    deleted: false
+                    publicly_visible: true
+                    cache_refresh_pending: true
+        '400':
+          $ref: '#/components/responses/ReviewModerationInvalidRequest'
+        '401':
+          $ref: '#/components/responses/ReviewModerationUnauthorized'
+        '403':
+          $ref: '#/components/responses/ReviewModerationForbidden'
+        '404':
+          $ref: '#/components/responses/ReviewModerationNotFound'
+        '409':
+          $ref: '#/components/responses/ReviewModerationConflict'
+        '502':
+          $ref: '#/components/responses/ReviewModerationUpstreamFailure'
   /api/v1/admin/products:
     get:
       tags:
@@ -2435,6 +2596,12 @@ components:
         default: 50
       example: 50
   headers:
+    AdminNoStore:
+      required: true
+      description: Prevents caching of moderation data and responses.
+      schema:
+        type: string
+        const: no-store
     CreditCacheControl:
       required: true
       description: Prevents credit responses from being cached.
@@ -2443,6 +2610,65 @@ components:
         enum:
         - no-store
   responses:
+    ReviewModerationInvalidRequest:
+      description: Invalid query or action; does not reveal upstream details.
+      headers:
+        Cache-Control:
+          $ref: '#/components/headers/AdminNoStore'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ReviewModerationFieldErrorResponse'
+    ReviewModerationUnauthorized:
+      description: Missing or invalid authentication.
+      headers:
+        Cache-Control:
+          $ref: '#/components/headers/AdminNoStore'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/AdminErrorResponse'
+    ReviewModerationForbidden:
+      description: Authenticated user is not an active staff member or superuser.
+      headers:
+        Cache-Control:
+          $ref: '#/components/headers/AdminNoStore'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/AdminErrorResponse'
+    ReviewModerationNotFound:
+      description: >-
+        The review ID is unknown, or the review is soft-deleted and the requested
+        action is not DELETE. DELETE on an already soft-deleted review succeeds.
+      headers:
+        Cache-Control:
+          $ref: '#/components/headers/AdminNoStore'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/AdminErrorResponse'
+    ReviewModerationConflict:
+      description: A genuinely invalid state transition identified by Core. Concurrency, stale queue data, same-state actions, and repeated DELETE are not conflicts.
+      headers:
+        Cache-Control:
+          $ref: '#/components/headers/AdminNoStore'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ReviewModerationFieldErrorResponse'
+    ReviewModerationUpstreamFailure:
+      description: >-
+        Core could not complete the request before committing a mutation;
+        upstream details are not exposed. A committed mutation with pending cache
+        refresh is returned as 200 with cache_refresh_pending=true instead.
+      headers:
+        Cache-Control:
+          $ref: '#/components/headers/AdminNoStore'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ReviewModerationUpstreamFailureResponse'
     AdminStockMovementRequestError:
       description: Sanitized error; a valid movement UUID is included when available.
       content:
@@ -3703,6 +3929,123 @@ components:
           - EXHAUSTED
           - DISCOUNT_LIMIT_EXCEEDED
           - EMPTY_CART
+    ReviewModerationStatus:
+      type: string
+      enum: [PENDING, ACCEPTED, REJECTED]
+    ReviewModerationAction:
+      type: string
+      enum: [ACCEPT, REJECT, DELETE]
+    AdminReview:
+      type: object
+      additionalProperties: false
+      required:
+      - review_id
+      - game_bgg_id
+      - game_name
+      - rating
+      - body
+      - created_at
+      - status
+      properties:
+        review_id:
+          type: integer
+          minimum: 1
+        game_bgg_id:
+          type: integer
+          minimum: 1
+        game_name:
+          type: string
+        rating:
+          type: integer
+          minimum: 1
+          maximum: 5
+        body:
+          type: string
+          minLength: 1
+          maxLength: 2000
+        created_at:
+          type: string
+          format: date-time
+        status:
+          $ref: '#/components/schemas/ReviewModerationStatus'
+    AdminReviewPage:
+      type: object
+      additionalProperties: false
+      required: [items, page, page_size, total, total_pages]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/AdminReview'
+        page:
+          type: integer
+          minimum: 1
+        page_size:
+          type: integer
+          minimum: 1
+          maximum: 100
+        total:
+          type: integer
+          minimum: 0
+        total_pages:
+          type: integer
+          minimum: 0
+    ModerateReviewRequest:
+      type: object
+      additionalProperties: false
+      required: [action]
+      properties:
+        action:
+          $ref: '#/components/schemas/ReviewModerationAction'
+    ModerateReviewResponse:
+      type: object
+      additionalProperties: false
+      required: [review_id, status, deleted, publicly_visible, cache_refresh_pending]
+      properties:
+        review_id:
+          type: integer
+          minimum: 1
+        status:
+          $ref: '#/components/schemas/ReviewModerationStatus'
+          description: Retained moderation status; soft-deletion is represented separately.
+        deleted:
+          type: boolean
+        publicly_visible:
+          type: boolean
+        cache_refresh_pending:
+          type: boolean
+          description: >-
+            True when Core committed the action but BFF cache invalidation has
+            not yet succeeded after bounded retries. The mutation itself succeeded;
+            public detail may remain temporarily stale until refresh completes.
+    ReviewModerationFieldErrorResponse:
+      type: object
+      additionalProperties: false
+      required: [errors]
+      properties:
+        errors:
+          type: array
+          minItems: 1
+          items:
+            type: object
+            additionalProperties: false
+            required: [code, message]
+            properties:
+              field:
+                type: string
+              code:
+                type: string
+                enum: [INVALID, REVIEW_NOT_FOUND, INVALID_TRANSITION]
+              message:
+                type: string
+    ReviewModerationUpstreamFailureResponse:
+      type: object
+      additionalProperties: false
+      required: [error]
+      properties:
+        error:
+          type: string
+          const: upstream GraphQL request failed
     AdminFieldErrorResponse:
       type: object
       additionalProperties: false

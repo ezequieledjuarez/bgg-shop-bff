@@ -5,7 +5,373 @@ import pytest
 import yaml
 
 from app import app
+from src import services
 from src.proxy import UpstreamError
+
+
+MODERATION_QUEUE = "/api/v1/admin/reviews"
+MODERATION_ACTION = f"{MODERATION_QUEUE}/501/actions"
+MODERATION_AUTH = {"Authorization": "Bearer synthetic-staff-token"}
+
+
+def _moderation_identity(is_staff=False, is_superuser=False, is_active=True):
+    return {
+        "data": {
+            "me": {
+                "id": "moderator-1",
+                "email": "moderator@example.test",
+                "isActive": is_active,
+                "isStaff": is_staff,
+                "isSuperuser": is_superuser,
+            }
+        }
+    }
+
+
+def _moderation_queue_payload():
+    return {
+        "data": {
+            "adminReviews": {
+                "items": [{
+                    "id": "501",
+                    "gameBggId": 13,
+                    "gameName": "Catan",
+                    "rating": 5,
+                    "body": "Great game",
+                    "createdAt": "2026-11-05T16:30:00Z",
+                    "status": "PENDING",
+                }],
+                "page": 2,
+                "pageSize": 17,
+                "total": 18,
+                "totalPages": 2,
+            }
+        }
+    }
+
+
+def _moderation_action_payload():
+    return {
+        "data": {
+            "moderateReview": {
+                "success": True,
+                "review": {
+                    "id": "501",
+                    "status": "ACCEPTED",
+                    "deleted": False,
+                    "publiclyVisible": True,
+                },
+                "userErrors": [],
+            }
+        }
+    }
+
+
+def _action_calls(upstream):
+    return [
+        call for call in upstream.call_args_list
+        if "moderateReview" in call.args[0]
+    ]
+
+
+def test_admin_review_routes_and_services_are_registered():
+    adapter = app.url_map.bind("localhost")
+    queue_endpoint, _ = adapter.match(MODERATION_QUEUE, method="GET")
+    action_endpoint, _ = adapter.match(MODERATION_ACTION, method="POST")
+
+    assert queue_endpoint
+    assert action_endpoint
+    assert callable(getattr(services, "admin_list_reviews", None))
+    assert callable(getattr(services, "admin_moderate_review", None))
+
+
+def test_admin_review_contract_matches_canonical_openapi():
+    path = Path(__file__).resolve().parents[1] / "specs" / "openapi.yaml"
+    contract = yaml.safe_load(path.read_text(encoding="utf-8"))
+    queue = contract["paths"][MODERATION_QUEUE]["get"]
+    action = contract["paths"][f"{MODERATION_QUEUE}/{{review_id}}/actions"]["post"]
+
+    assert queue["operationId"] == "adminListReviews"
+    assert queue["security"] == [{"BearerAuth": []}]
+    assert queue["responses"]["200"]["headers"]["Cache-Control"]["$ref"] == (
+        "#/components/headers/AdminNoStore"
+    )
+    assert action["operationId"] == "adminModerateReview"
+    assert action["security"] == [{"BearerAuth": []}]
+    assert action["requestBody"]["content"]["application/json"]["schema"]["$ref"] == (
+        "#/components/schemas/ModerateReviewRequest"
+    )
+    assert action["responses"]["200"]["content"]["application/json"]["schema"]["$ref"] == (
+        "#/components/schemas/ModerateReviewResponse"
+    )
+    assert contract["components"]["schemas"]["ReviewModerationAction"]["enum"] == [
+        "ACCEPT", "REJECT", "DELETE",
+    ]
+    assert "cache_refresh_pending" in contract["components"]["schemas"][
+        "ModerateReviewResponse"
+    ]["required"]
+
+
+def test_admin_review_queue_maps_core_fields_and_pagination():
+    with patch(
+        "src.proxy._graphql_request",
+        side_effect=[
+            _moderation_identity(is_staff=True),
+            _moderation_queue_payload(),
+        ],
+    ) as upstream:
+        response = app.test_client().get(
+            f"{MODERATION_QUEUE}?status=PENDING&page=2&page_size=17",
+            headers=MODERATION_AUTH,
+        )
+
+    assert response.status_code == 200
+    assert response.headers["Cache-Control"] == "no-store"
+    assert response.get_json() == {
+        "items": [{
+            "review_id": 501,
+            "game_bgg_id": 13,
+            "game_name": "Catan",
+            "rating": 5,
+            "body": "Great game",
+            "created_at": "2026-11-05T16:30:00Z",
+            "status": "PENDING",
+        }],
+        "page": 2,
+        "page_size": 17,
+        "total": 18,
+        "total_pages": 2,
+    }
+    queue_call = next(call for call in upstream.call_args_list if "adminReviews" in call.args[0])
+    assert queue_call.args[1] == {"status": "PENDING", "page": 2, "pageSize": 17}
+    assert queue_call.args[2] == MODERATION_AUTH["Authorization"]
+
+
+def test_admin_review_accept_maps_action_and_core_response():
+    with patch(
+        "src.proxy._graphql_request",
+        side_effect=[
+            _moderation_identity(is_superuser=True),
+            _moderation_action_payload(),
+        ],
+    ) as upstream, patch("src.catalog_cache.invalidate_catalog_cache") as invalidate:
+        response = app.test_client().post(
+            MODERATION_ACTION,
+            json={"action": "ACCEPT"},
+            headers=MODERATION_AUTH,
+        )
+
+    assert response.status_code == 200
+    assert response.headers["Cache-Control"] == "no-store"
+    assert response.get_json() == {
+        "review_id": 501,
+        "status": "ACCEPTED",
+        "deleted": False,
+        "publicly_visible": True,
+        "cache_refresh_pending": False,
+    }
+    mutation = _action_calls(upstream)
+    assert len(mutation) == 1
+    assert mutation[0].args[1] == {"reviewId": "501", "action": "ACCEPT"}
+    invalidate.assert_called_once()
+
+
+@pytest.mark.parametrize(
+    "identity",
+    [
+        _moderation_identity(is_staff=True),
+        _moderation_identity(is_superuser=True),
+    ],
+)
+def test_admin_review_queue_accepts_authenticated_staff_or_superuser(identity):
+    with patch(
+        "src.proxy._graphql_request",
+        side_effect=[identity, _moderation_queue_payload()],
+    ) as upstream:
+        response = app.test_client().get(MODERATION_QUEUE, headers=MODERATION_AUTH)
+
+    assert response.status_code == 200
+    assert upstream.call_args_list[0].args[2] == MODERATION_AUTH["Authorization"]
+
+
+def test_admin_review_queue_rejects_missing_authorization():
+    with patch("src.proxy._graphql_request") as upstream:
+        response = app.test_client().get(MODERATION_QUEUE)
+
+    assert response.status_code == 401
+    assert response.headers["Cache-Control"] == "no-store"
+    upstream.assert_not_called()
+
+
+def test_admin_review_queue_rejects_authorized_context_without_user():
+    with patch("src.proxy._graphql_request", return_value={"data": {"me": None}}) as upstream:
+        response = app.test_client().get(MODERATION_QUEUE, headers=MODERATION_AUTH)
+
+    assert response.status_code == 401
+    assert response.headers["Cache-Control"] == "no-store"
+    assert upstream.call_count == 1
+
+
+def test_admin_review_queue_rejects_authenticated_non_staff_user():
+    with patch(
+        "src.proxy._graphql_request",
+        return_value=_moderation_identity(),
+    ) as upstream:
+        response = app.test_client().get(MODERATION_QUEUE, headers=MODERATION_AUTH)
+
+    assert response.status_code == 403
+    assert response.headers["Cache-Control"] == "no-store"
+    assert upstream.call_count == 1
+
+
+def test_admin_review_queue_rejects_inactive_staff_user():
+    with patch(
+        "src.proxy._graphql_request",
+        return_value=_moderation_identity(is_staff=True, is_active=False),
+    ) as upstream:
+        response = app.test_client().get(MODERATION_QUEUE, headers=MODERATION_AUTH)
+
+    assert response.status_code == 403
+    assert response.headers["Cache-Control"] == "no-store"
+    assert upstream.call_count == 1
+
+
+def test_admin_review_action_rejects_operation_key_without_user(monkeypatch):
+    monkeypatch.setattr(
+        "src.opkey_middleware.validate_op_key_with_core",
+        lambda raw_key, path, method: {"valid": True},
+    )
+    with patch("src.proxy._graphql_request") as upstream:
+        response = app.test_client().post(
+            MODERATION_ACTION,
+            json={"action": "ACCEPT"},
+            headers={"X-Op-Key": "synthetic-valid-op-key"},
+        )
+
+    assert response.status_code == 401
+    assert response.headers["Cache-Control"] == "no-store"
+    upstream.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        f"{MODERATION_QUEUE}?status=APPROVED",
+        f"{MODERATION_QUEUE}?page=0",
+        f"{MODERATION_QUEUE}?page_size=101",
+    ],
+)
+def test_admin_review_queue_validates_filters_without_core_call(path):
+    with patch("src.proxy.check_admin", return_value=True), \
+            patch("src.proxy._graphql_request") as upstream:
+        response = app.test_client().get(path, headers=MODERATION_AUTH)
+
+    assert response.status_code == 400
+    assert response.headers["Cache-Control"] == "no-store"
+    assert response.get_json()["errors"][0]["code"] == "INVALID"
+    upstream.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {},
+        {"action": "APPROVE"},
+        {"action": "ACCEPT", "reason": "not in the canonical request schema"},
+    ],
+)
+def test_admin_review_action_validates_request_without_core_mutation(payload):
+    with patch("src.proxy.check_admin", return_value=True), \
+            patch("src.proxy._graphql_request") as upstream:
+        response = app.test_client().post(
+            MODERATION_ACTION,
+            json=payload,
+            headers=MODERATION_AUTH,
+        )
+
+    assert response.status_code == 400
+    assert response.headers["Cache-Control"] == "no-store"
+    upstream.assert_not_called()
+
+
+def test_admin_review_upstream_error_is_sanitized():
+    private_details = (
+        "RuntimeError: failed at http://core.internal/graphql "
+        "Authorization: Bearer synthetic-core-credential"
+    )
+    with patch(
+        "src.proxy._graphql_request",
+        side_effect=[
+            _moderation_identity(is_staff=True),
+            UpstreamError(private_details),
+        ],
+    ):
+        response = app.test_client().get(MODERATION_QUEUE, headers=MODERATION_AUTH)
+
+    body = response.get_data(as_text=True)
+    assert response.status_code == 502
+    assert response.headers["Cache-Control"] == "no-store"
+    assert response.get_json() == {"error": "upstream GraphQL request failed"}
+    for private_value in (
+        "RuntimeError",
+        "Traceback",
+        "http://core.internal/graphql",
+        "Authorization",
+        "Bearer",
+        private_details,
+    ):
+        assert private_value not in body
+
+
+def test_admin_review_retry_success_keeps_single_core_mutation_and_clears_pending():
+    with patch(
+        "src.proxy._graphql_request",
+        side_effect=[
+            _moderation_identity(is_staff=True),
+            _moderation_action_payload(),
+        ],
+    ) as upstream, patch(
+        "src.catalog_cache.invalidate_catalog_cache",
+        side_effect=[RuntimeError("synthetic cache outage"), None],
+    ) as invalidate:
+        response = app.test_client().post(
+            MODERATION_ACTION,
+            json={"action": "ACCEPT"},
+            headers=MODERATION_AUTH,
+        )
+
+    assert response.status_code == 200
+    assert response.headers["Cache-Control"] == "no-store"
+    assert response.get_json()["cache_refresh_pending"] is False
+    assert invalidate.call_count == 2
+    assert len(_action_calls(upstream)) == 1
+
+
+def test_admin_review_retry_exhaustion_preserves_committed_success_as_pending():
+    with patch(
+        "src.proxy._graphql_request",
+        side_effect=[
+            _moderation_identity(is_staff=True),
+            _moderation_action_payload(),
+        ],
+    ) as upstream, patch(
+        "src.catalog_cache.invalidate_catalog_cache",
+        side_effect=[
+            RuntimeError("synthetic cache outage"),
+            RuntimeError("synthetic cache outage"),
+        ],
+    ) as invalidate:
+        response = app.test_client().post(
+            MODERATION_ACTION,
+            json={"action": "ACCEPT"},
+            headers=MODERATION_AUTH,
+        )
+
+    assert response.status_code == 200
+    assert response.headers["Cache-Control"] == "no-store"
+    assert response.get_json()["cache_refresh_pending"] is True
+    assert invalidate.call_count == 2
+    assert len(_action_calls(upstream)) == 1
 
 
 def test_review_forwards_valid_data_and_returns_pending_response():
