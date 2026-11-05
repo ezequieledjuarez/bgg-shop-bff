@@ -11,7 +11,7 @@ AUTH = {"Authorization": "Bearer synthetic-test-token"}
 METRICS_PAYLOAD = {
     "data": {
         "adminSalesMetrics": {
-            "revenueTotal": "0.00",
+            "revenueTotal": 0.0,
             "ordersCount": 0,
             "topProducts": [],
             "ordersByDispatchStatus": [],
@@ -125,6 +125,47 @@ def test_sales_metrics_rejects_non_integer_product_id():
     upstream.assert_not_called()
 
 
+@pytest.mark.parametrize("value", ["0", "2147483648"])
+def test_sales_metrics_rejects_product_id_outside_positive_32_bit_range(value):
+    response, upstream = _get_metrics(f"?product_id={value}")
+
+    assert response.status_code == 400
+    assert response.get_json()["errors"][0]["field"] == "product_id"
+    upstream.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "query,field",
+    [
+        ("?from=2026-01-01T00:00:00Z&from=2026-01-02T00:00:00Z&to=2026-02-01T00:00:00Z", "from"),
+        ("?unexpected=value", "query"),
+    ],
+)
+def test_sales_metrics_rejects_unknown_or_duplicated_scalar_parameters(query, field):
+    response, upstream = _get_metrics(query)
+
+    assert response.status_code == 400
+    assert response.get_json()["errors"][0]["field"] == field
+    upstream.assert_not_called()
+
+
+def test_sales_metrics_preserves_category_filter_values():
+    response, upstream = _get_metrics("?category=%20Family%20")
+
+    assert response.status_code == 200
+    assert upstream.call_args.args[1]["categories"] == [" Family "]
+
+
+def test_sales_categories_rejects_query_parameters():
+    with patch("src.proxy.check_admin", return_value=True), \
+            patch("src.proxy._graphql_request") as upstream:
+        response = app.test_client().get(f"{CATEGORIES_URL}?unexpected=value", headers=AUTH)
+
+    assert response.status_code == 400
+    assert response.get_json()["errors"][0]["code"] == "INVALID"
+    upstream.assert_not_called()
+
+
 def test_sales_metrics_forwards_repeated_filters_as_arrays():
     response, upstream = _get_metrics(
         "?category=Family&category=Strategy&product_id=17&product_id=29"
@@ -141,6 +182,7 @@ def test_sales_metrics_response_is_not_cacheable():
 
     assert response.status_code == 200
     assert response.headers["Cache-Control"] == "no-store"
+    assert response.get_json()["revenue_total"] == 0.0
 
 
 def test_sales_categories_response_is_not_cacheable():
@@ -167,7 +209,8 @@ def test_sales_metrics_public_errors_redact_upstream_details(path):
         response = app.test_client().get(path, headers={"Authorization": token})
 
     body = response.get_data(as_text=True)
-    assert response.status_code >= 500
+    assert response.status_code == 502
+    assert response.get_json() == {"error": "upstream GraphQL request failed"}
     for private_value in (
         "Traceback",
         "https://core.internal/graphql",
@@ -175,3 +218,18 @@ def test_sales_metrics_public_errors_redact_upstream_details(path):
         "synthetic-secret",
     ):
         assert private_value not in body
+
+
+def test_sales_metrics_maps_upstream_invalid_errors_to_public_fields():
+    payload = {
+        "errors": [
+            {"extensions": {"code": "INVALID", "field": "to"}}
+        ]
+    }
+    with patch("src.proxy.check_admin", return_value=True), \
+            patch("src.proxy._graphql_request", return_value=payload):
+        response = app.test_client().get(METRICS_URL, headers=AUTH)
+
+    assert response.status_code == 400
+    assert response.get_json()["errors"][0]["code"] == "INVALID"
+    assert response.get_json()["errors"][0]["field"] == "to"

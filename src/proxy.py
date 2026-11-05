@@ -1259,6 +1259,101 @@ def list_admin_audit(filters, token=None, op_key=None):
     return {"items": items, "next_cursor": page.get("nextCursor")}
 
 
+def _admin_sales_graphql_error(payload):
+    for error in payload.get("errors") or []:
+        extensions = error.get("extensions") if isinstance(error, dict) else None
+        code = extensions.get("code") if isinstance(extensions, dict) else None
+        if code in ("UNAUTHENTICATED", "FORBIDDEN"):
+            return UpstreamError("Sales metrics request rejected", code, user_error=True)
+        if code == "INVALID":
+            field = extensions.get("field")
+            field_names = {
+                "from": "from",
+                "to": "to",
+                "categories": "category",
+                "productIds": "product_id",
+            }
+            field = field_names.get(field) if isinstance(field, str) else None
+            return UpstreamError(
+                "Sales metrics request is invalid",
+                "INVALID",
+                [field] if field else None,
+                user_error=True,
+            )
+        break
+    return UpstreamError("GraphQL upstream returned errors")
+
+
+def get_admin_sales_metrics(filters, token=None, op_key=None):
+    query = """
+    query AdminSalesMetrics($from: String, $to: String, $categories: [String!], $productIds: [Int!]) {
+      adminSalesMetrics(from: $from, to: $to, categories: $categories, productIds: $productIds) {
+        revenueTotal
+        ordersCount
+        topProducts { bggId name units revenue }
+        ordersByDispatchStatus { status count }
+        ordersByPaymentStatus { status count }
+        revenueByDay { date revenue }
+      }
+    }
+    """
+    variables = {
+        "from": filters.get("from"),
+        "to": filters.get("to"),
+        "categories": filters.get("categories"),
+        "productIds": filters.get("product_ids"),
+    }
+    payload = _graphql_request(query, variables, token, op_key=op_key)
+    if payload.get("errors"):
+        raise _admin_sales_graphql_error(payload)
+    metrics = (payload.get("data") or {}).get("adminSalesMetrics")
+    if not isinstance(metrics, dict):
+        raise UpstreamError("GraphQL upstream returned invalid sales metrics")
+    try:
+        return {
+            "revenue_total": metrics["revenueTotal"],
+            "orders_count": metrics["ordersCount"],
+            "top_products": [
+                {
+                    "bgg_id": item["bggId"],
+                    "name": item["name"],
+                    "units": item["units"],
+                    "revenue": item["revenue"],
+                }
+                for item in metrics["topProducts"]
+            ],
+            "orders_by_dispatch_status": [
+                {"status": item["status"], "count": item["count"]}
+                for item in metrics["ordersByDispatchStatus"]
+            ],
+            "orders_by_payment_status": [
+                {"status": item["status"], "count": item["count"]}
+                for item in metrics["ordersByPaymentStatus"]
+            ],
+            "revenue_by_day": [
+                {"date": item["date"], "revenue": item["revenue"]}
+                for item in metrics["revenueByDay"]
+            ],
+        }
+    except (KeyError, TypeError):
+        raise UpstreamError("GraphQL upstream returned invalid sales metrics") from None
+
+
+def get_admin_sales_categories(token=None, op_key=None):
+    query = """
+    query AdminSalesCategories {
+      adminSalesCategories
+    }
+    """
+    payload = _graphql_request(query, {}, token, op_key=op_key)
+    if payload.get("errors"):
+        raise _admin_sales_graphql_error(payload)
+    categories = (payload.get("data") or {}).get("adminSalesCategories")
+    if not isinstance(categories, list) or not all(isinstance(item, str) for item in categories):
+        raise UpstreamError("GraphQL upstream returned invalid sales categories")
+    return categories
+
+
 def list_admin_coupons(token=None, op_key=None):
     query = f"""
     query AdminCoupons {{
