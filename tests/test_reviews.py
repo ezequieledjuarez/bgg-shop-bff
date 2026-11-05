@@ -323,6 +323,35 @@ def test_admin_review_upstream_error_is_sanitized():
         assert private_value not in body
 
 
+def test_admin_review_unexpected_upstream_exception_is_sanitized():
+    private_details = (
+        "RuntimeError: failed at http://core.internal/graphql "
+        "Authorization: bearer-secret"
+    )
+    with patch(
+        "src.proxy._graphql_request",
+        side_effect=[
+            _moderation_identity(is_staff=True),
+            RuntimeError(private_details),
+        ],
+    ):
+        response = app.test_client().get(MODERATION_QUEUE, headers=MODERATION_AUTH)
+
+    body = response.get_data(as_text=True)
+    assert response.status_code == 502
+    assert response.headers["Cache-Control"] == "no-store"
+    assert response.get_json() == {"error": "upstream GraphQL request failed"}
+    for private_value in (
+        "RuntimeError",
+        "Traceback",
+        "http://core.internal/graphql",
+        "Authorization",
+        "bearer-secret",
+        private_details,
+    ):
+        assert private_value not in body
+
+
 def test_admin_review_retry_success_keeps_single_core_mutation_and_clears_pending():
     with patch(
         "src.proxy._graphql_request",

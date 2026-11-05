@@ -29,12 +29,18 @@ from src.controllers import (
     list_wishlist,
     remove_wishlist_item,
 )
+from src.controllers.reviews_controller import (
+    admin_list_reviews as admin_list_reviews_controller,
+    admin_moderate_review as admin_moderate_review_controller,
+)
 from src.services import (
     add_to_cart,
     authenticate_account,
     checkout,
     confirm_payment,
     create_review,
+    admin_list_reviews,
+    admin_moderate_review,
     get_invoice,
     get_order,
     get_orders,
@@ -512,6 +518,16 @@ def refresh():
 
 
 # Admin management endpoints (minimal scaffolding)
+@app.route("/api/v1/admin/reviews", methods=["GET"])
+def admin_reviews_list():
+    return admin_list_reviews_controller(admin_list_reviews)
+
+
+@app.route("/api/v1/admin/reviews/<int:review_id>/actions", methods=["POST"])
+def admin_reviews_moderate(review_id):
+    return admin_moderate_review_controller(review_id, admin_moderate_review)
+
+
 @app.route("/api/v1/admin/op-sessions", methods=["GET"])
 def admin_op_sessions():
     return list_sessions()

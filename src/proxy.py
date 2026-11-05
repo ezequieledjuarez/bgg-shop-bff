@@ -941,18 +941,29 @@ def get_invoice(order_id, token):
         raise UpstreamError("Invoice upstream request failed") from None
 
 
-def check_admin(token):
+def check_admin(token, require_active=False):
     """Return admin status, or None when Core reports no authenticated user."""
-    query = """
-    query WhoAmI {
-      me { id email isStaff isSuperuser }
-    }
+    active_field = "isActive" if require_active else ""
+    query = f"""
+    query WhoAmI {{
+      me {{ id email {active_field} isStaff isSuperuser }}
+    }}
     """
     if not token or not isinstance(token, str) or not token.strip():
         return None
     token = token.strip()
     payload = _graphql_request(query, {}, token)
-    if not isinstance(payload, dict) or "errors" in payload:
+    if not isinstance(payload, dict):
+        raise UpstreamError("GraphQL upstream returned an invalid identity")
+    if payload.get("errors"):
+        error = next(
+            (item for item in payload["errors"] if isinstance(item, dict)),
+            {},
+        )
+        extensions = error.get("extensions")
+        code = extensions.get("code") if isinstance(extensions, dict) else None
+        if require_active and code == "UNAUTHENTICATED":
+            return None
         raise UpstreamError("GraphQL upstream returned an invalid identity")
     data = payload.get("data")
     if not isinstance(data, dict) or "me" not in data:
@@ -964,7 +975,161 @@ def check_admin(token):
             or any(not isinstance(me.get(field), str) or not me[field] for field in ("id", "email"))
             or any(type(me.get(field)) is not bool for field in ("isStaff", "isSuperuser"))):
         raise UpstreamError("GraphQL upstream returned an invalid identity")
+    if require_active:
+        if type(me.get("isActive")) is not bool:
+            raise UpstreamError("GraphQL upstream returned an invalid identity")
+        if not me["isActive"]:
+            return False
     return me["isStaff"] or me["isSuperuser"]
+
+
+def _review_moderation_error(payload):
+    for error in payload.get("errors") or []:
+        extensions = error.get("extensions") if isinstance(error, dict) else None
+        code = extensions.get("code") if isinstance(extensions, dict) else None
+        if code in (
+            "UNAUTHENTICATED",
+            "FORBIDDEN",
+            "REVIEW_NOT_FOUND",
+            "INVALID_TRANSITION",
+        ):
+            return UpstreamError(
+                "Review moderation request rejected",
+                code,
+                user_error=True,
+            )
+    return UpstreamError("GraphQL upstream returned errors")
+
+
+def _moderation_user_error(errors):
+    for error in errors:
+        code = error.get("code") if isinstance(error, dict) else None
+        if code in (
+            "UNAUTHENTICATED",
+            "FORBIDDEN",
+            "REVIEW_NOT_FOUND",
+            "INVALID_TRANSITION",
+        ):
+            return UpstreamError(
+                "Review moderation request rejected",
+                code,
+                user_error=True,
+            )
+    return UpstreamError("GraphQL upstream returned errors")
+
+
+def _moderation_id(value):
+    if isinstance(value, bool):
+        raise UpstreamError("GraphQL upstream returned an invalid review")
+    try:
+        identifier = int(value)
+    except (TypeError, ValueError):
+        raise UpstreamError("GraphQL upstream returned an invalid review") from None
+    if not 1 <= identifier <= 2147483647:
+        raise UpstreamError("GraphQL upstream returned an invalid review")
+    return identifier
+
+
+def list_admin_reviews(filters, token):
+    query = """
+    query AdminReviews($status: ReviewModerationStatus, $page: Int!, $pageSize: Int!) {
+      adminReviews(status: $status, page: $page, pageSize: $pageSize) {
+        items { id gameBggId gameName rating body createdAt status }
+        page pageSize total totalPages
+      }
+    }
+    """
+    payload = _graphql_request(query, filters, token)
+    if not isinstance(payload, dict):
+        raise UpstreamError("GraphQL upstream returned an invalid response")
+    if payload.get("errors"):
+        raise _review_moderation_error(payload)
+    page = (payload.get("data") or {}).get("adminReviews")
+    if not isinstance(page, dict) or not isinstance(page.get("items"), list):
+        raise UpstreamError("GraphQL upstream returned an invalid review page")
+    items = []
+    try:
+        for item in page["items"]:
+            if not isinstance(item, dict):
+                raise TypeError
+            game_bgg_id = item["gameBggId"]
+            rating = item["rating"]
+            if (type(game_bgg_id) is not int or game_bgg_id < 1
+                    or type(rating) is not int or not 1 <= rating <= 5
+                    or not isinstance(item["gameName"], str)
+                    or not isinstance(item["body"], str)
+                    or not 1 <= len(item["body"]) <= 2000
+                    or not isinstance(item["createdAt"], str)
+                    or item["status"] not in ("PENDING", "ACCEPTED", "REJECTED")):
+                raise TypeError
+            items.append({
+                "review_id": _moderation_id(item["id"]),
+                "game_bgg_id": game_bgg_id,
+                "game_name": item["gameName"],
+                "rating": rating,
+                "body": item["body"],
+                "created_at": item["createdAt"],
+                "status": item["status"],
+            })
+        result = {
+            "items": items,
+            "page": page["page"],
+            "page_size": page["pageSize"],
+            "total": page["total"],
+            "total_pages": page["totalPages"],
+        }
+        if any(type(result[key]) is not int for key in ("page", "page_size", "total", "total_pages")):
+            raise TypeError
+        if result["page"] < 1 or not 1 <= result["page_size"] <= 100:
+            raise TypeError
+        if result["total"] < 0 or result["total_pages"] < 0:
+            raise TypeError
+    except (KeyError, TypeError, ValueError):
+        raise UpstreamError("GraphQL upstream returned an invalid review page") from None
+    return result
+
+
+def moderate_admin_review(review_id, action, token):
+    query = """
+    mutation ModerateReview($reviewId: ID!, $action: ReviewModerationAction!) {
+      moderateReview(reviewId: $reviewId, action: $action) {
+        success
+        review { id status deleted publiclyVisible }
+        userErrors { field code message }
+      }
+    }
+    """
+    payload = _graphql_request(
+        query,
+        {"reviewId": str(review_id), "action": action},
+        token,
+    )
+    if not isinstance(payload, dict):
+        raise UpstreamError("GraphQL upstream returned an invalid response")
+    if payload.get("errors"):
+        raise _review_moderation_error(payload)
+    result = (payload.get("data") or {}).get("moderateReview")
+    if not isinstance(result, dict):
+        raise UpstreamError("GraphQL upstream returned an invalid moderation result")
+    errors = result.get("userErrors")
+    if not isinstance(errors, list):
+        raise UpstreamError("GraphQL upstream returned an invalid moderation result")
+    if errors:
+        raise _moderation_user_error(errors)
+    review = result.get("review")
+    if result.get("success") is not True or not isinstance(review, dict):
+        raise UpstreamError("GraphQL upstream returned an invalid moderation result")
+    status = review.get("status")
+    if (status not in ("PENDING", "ACCEPTED", "REJECTED")
+            or type(review.get("deleted")) is not bool
+            or type(review.get("publiclyVisible")) is not bool):
+        raise UpstreamError("GraphQL upstream returned an invalid moderation result")
+    return {
+        "review_id": _moderation_id(review.get("id")),
+        "status": status,
+        "deleted": review["deleted"],
+        "publicly_visible": review["publiclyVisible"],
+    }
 
 
 def list_available_coupons():

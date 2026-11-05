@@ -46,6 +46,14 @@ def create_review(slug, rating, body, token):
     return proxy.create_review(slug, rating, body, token)
 
 
+def admin_list_reviews(filters, token):
+    return proxy.list_admin_reviews(filters, token)
+
+
+def admin_moderate_review(review_id, action, token):
+    return proxy.moderate_admin_review(review_id, action, token)
+
+
 def get_cart(cart_id=None, token=None):
     return proxy.get_cart(cart_id, token)
 
