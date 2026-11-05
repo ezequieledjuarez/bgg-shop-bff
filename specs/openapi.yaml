@@ -1978,9 +1978,12 @@ paths:
       summary: Get administrative sales metrics
       description: >-
         Returns gross sales metrics for an active staff or superuser account.
-        from and to are optional timezone-aware ISO instants normalized to UTC
-        and define the half-open range [from, to); when both are omitted, the
-        range defaults to the last 30 days. The maximum range is 366 days.
+        from and to are individually optional timezone-aware ISO instants
+        normalized to UTC and define the half-open range [from, to). Callers
+        must provide both bounds or omit both; if exactly one is supplied, the
+        request returns INVALID and identifies the missing bound in field.
+        When both are omitted, the range defaults to the last 30 days. The
+        maximum range is 366 days.
         Revenue and orders_count use paid orders by paid_at; payment and
         dispatch status counts use orders by created_at. Gross revenue is the
         sum of purchase-order line subtotals and may differ from the order
@@ -2000,14 +2003,14 @@ paths:
       - name: from
         in: query
         required: false
-        description: Optional inclusive UTC lower bound; a timezone designator is required.
+        description: Optional inclusive UTC lower bound; provide together with to or omit both bounds. A timezone designator is required.
         schema:
           type: string
           format: date-time
       - name: to
         in: query
         required: false
-        description: Optional exclusive UTC upper bound; a timezone designator is required.
+        description: Optional exclusive UTC upper bound; provide together with from or omit both bounds. A timezone designator is required.
         schema:
           type: string
           format: date-time
