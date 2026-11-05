@@ -1971,6 +1971,123 @@ paths:
           $ref: '#/components/responses/AdminForbidden'
         '502':
           $ref: '#/components/responses/AdminUpstreamFailure'
+  /api/v1/admin/sales-metrics:
+    get:
+      tags:
+      - Administration
+      summary: Get administrative sales metrics
+      description: >-
+        Returns gross sales metrics for an active staff or superuser account.
+        from and to are optional timezone-aware ISO instants normalized to UTC
+        and define the half-open range [from, to); when both are omitted, the
+        range defaults to the last 30 days. The maximum range is 366 days.
+        Revenue and orders_count use paid orders by paid_at; payment and
+        dispatch status counts use orders by created_at. Gross revenue is the
+        sum of purchase-order line subtotals and may differ from the order
+        total. Category filtering uses exact stored category strings; category
+        and product filters restrict matching lines, and each matching order
+        is counted once. Dispatch status is derived at query time from paid_at:
+        Pendiente for pending_payment, En preparación before 24 hours, Enviado
+        from 24 to less than 72 hours, and Entregado at 72 hours or later.
+        pickup orders follow the same rule; rejected, cancelled and
+        paid_stock_conflict orders have no dispatch status. Invalid input
+        returns 400. Responses are not cacheable. Runtime behavior is planned.
+      operationId: adminGetSalesMetrics
+      x-implementation-status: planned
+      security:
+      - BearerAuth: []
+      parameters:
+      - name: from
+        in: query
+        required: false
+        description: Optional inclusive UTC lower bound; a timezone designator is required.
+        schema:
+          type: string
+          format: date-time
+      - name: to
+        in: query
+        required: false
+        description: Optional exclusive UTC upper bound; a timezone designator is required.
+        schema:
+          type: string
+          format: date-time
+      - name: category
+        in: query
+        required: false
+        description: Exact stored category filter; repeat to select multiple categories.
+        style: form
+        explode: true
+        schema:
+          type: array
+          items:
+            type: string
+      - name: product_id
+        in: query
+        required: false
+        description: Product BGG identifier filter; repeat to select multiple products.
+        style: form
+        explode: true
+        schema:
+          type: array
+          items:
+            type: integer
+            minimum: 1
+            maximum: 2147483647
+      responses:
+        '200':
+          description: Sales metrics.
+          headers:
+            Cache-Control:
+              required: true
+              schema:
+                type: string
+                enum:
+                - no-store
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminSalesMetrics'
+        '400':
+          $ref: '#/components/responses/AdminInvalidRequest'
+        '401':
+          $ref: '#/components/responses/AdminUnauthorized'
+        '403':
+          $ref: '#/components/responses/AdminForbidden'
+  /api/v1/admin/sales-metrics/categories:
+    get:
+      tags:
+      - Administration
+      summary: List sales-metrics category filters
+      description: >-
+        Returns distinct stored product category strings for the sales-metrics
+        filter. Requires an active staff or superuser account. Responses are
+        not cacheable. Runtime behavior is planned.
+      operationId: adminGetSalesCategories
+      x-implementation-status: planned
+      security:
+      - BearerAuth: []
+      responses:
+        '200':
+          description: Distinct stored category strings.
+          headers:
+            Cache-Control:
+              required: true
+              schema:
+                type: string
+                enum:
+                - no-store
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: string
+        '401':
+          $ref: '#/components/responses/AdminUnauthorized'
+        '403':
+          $ref: '#/components/responses/AdminForbidden'
+        '502':
+          $ref: '#/components/responses/AdminUpstreamFailure'
   /api/v1/cart/coupons/preview:
     post:
       tags:
@@ -3384,6 +3501,91 @@ components:
         next_cursor:
           type: [string, 'null']
           description: Opaque cursor for the next page, or null at the end.
+    AdminSalesMetrics:
+      type: object
+      additionalProperties: false
+      required:
+      - revenue_total
+      - orders_count
+      - top_products
+      - orders_by_dispatch_status
+      - orders_by_payment_status
+      - revenue_by_day
+      properties:
+        revenue_total:
+          type: number
+          minimum: 0
+          description: Gross ARS revenue from paid-order line subtotals.
+        orders_count:
+          type: integer
+          minimum: 0
+          description: Number of matching paid orders, counted once per order.
+        top_products:
+          type: array
+          maxItems: 10
+          items:
+            $ref: '#/components/schemas/AdminSalesTopProduct'
+        orders_by_dispatch_status:
+          type: array
+          items:
+            $ref: '#/components/schemas/AdminSalesStatusCount'
+        orders_by_payment_status:
+          type: array
+          items:
+            $ref: '#/components/schemas/AdminSalesStatusCount'
+        revenue_by_day:
+          type: array
+          items:
+            $ref: '#/components/schemas/AdminSalesRevenueByDay'
+    AdminSalesTopProduct:
+      type: object
+      additionalProperties: false
+      required:
+      - bgg_id
+      - name
+      - units
+      - revenue
+      properties:
+        bgg_id:
+          type: integer
+          minimum: 1
+        name:
+          type: string
+        units:
+          type: integer
+          minimum: 1
+        revenue:
+          type: number
+          minimum: 0
+          description: Gross ARS revenue from matching line subtotals.
+    AdminSalesRevenueByDay:
+      type: object
+      additionalProperties: false
+      required:
+      - date
+      - revenue
+      properties:
+        date:
+          type: string
+          format: date
+          description: UTC calendar day.
+        revenue:
+          type: number
+          minimum: 0
+          description: Gross ARS revenue from matching line subtotals.
+    AdminSalesStatusCount:
+      type: object
+      additionalProperties: false
+      required:
+      - status
+      - count
+      properties:
+        status:
+          type: string
+          description: Payment status or derived dispatch status.
+        count:
+          type: integer
+          minimum: 0
     AdminCoupon:
       type: object
       additionalProperties: false

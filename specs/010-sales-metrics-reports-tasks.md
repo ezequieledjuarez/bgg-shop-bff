@@ -5,9 +5,9 @@ Branch: `010-sales-metrics-reports`. Local validation only.
 
 ## Contract (blocking)
 
-- [ ] X-2 Add `GET /api/v1/admin/sales-metrics` to `specs/openapi.yaml`: params `from`, `to`, repeated `category`, repeated `product_id`; responses 200/400/401/403; `Cache-Control: no-store`; `x-implementation-status: planned`. Document date semantics (revenue/`ordersCount` by `paid_at`, status counts by `created_at`), gross revenue from line subtotals, dispatch rules, 366-day maximum and 30-day default.
-- [ ] X-3 Add `GET /api/v1/admin/sales-metrics/categories` to the OpenAPI.
-- [ ] X-4 Run `scripts/run_contracts.sh` and confirm OpenAPI and Core SDL are consistent. (after X-1..X-3, Core side included)
+- [x] X-2 Add `GET /api/v1/admin/sales-metrics` to `specs/openapi.yaml` with optional `from`/`to`, repeated `category`/`product_id`, responses 200/400/401/403, `Cache-Control: no-store`, planned status, and the business rules from X-1.
+- [x] X-3 Add `GET /api/v1/admin/sales-metrics/categories` to the OpenAPI with distinct stored categories, 200/401/403/502 responses, `Cache-Control: no-store`, and planned status.
+- [x] X-4 Validate OpenAPI and Core SDL structure and run `scripts/run_contracts.sh`; structural assertions passed, while unrelated BFF service tests failed (see global Evidence Ledger).
 
 ## Implementation
 
