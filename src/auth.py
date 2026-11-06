@@ -33,3 +33,30 @@ def admin_required(f):
 
 	return wrapper
 
+
+def review_moderator_required(f):
+	@wraps(f)
+	def wrapper(*args, **kwargs):
+		auth_header = request.headers.get("Authorization")
+		if not auth_header or not auth_header.strip():
+			response = jsonify({"error": "Authentication is required."})
+			response.status_code = 401
+		else:
+			try:
+				is_moderator = proxy.check_admin(auth_header.strip(), require_active=True)
+			except Exception:
+				response = jsonify({"error": "upstream GraphQL request failed"})
+				response.status_code = 502
+			else:
+				if is_moderator is None:
+					response = jsonify({"error": "Authentication is required."})
+					response.status_code = 401
+				elif not is_moderator:
+					response = jsonify({"error": "Administrative permission is required."})
+					response.status_code = 403
+				else:
+					return f(*args, **kwargs)
+		response.headers["Cache-Control"] = "no-store"
+		return response
+
+	return wrapper
