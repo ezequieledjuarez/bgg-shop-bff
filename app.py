@@ -87,6 +87,10 @@ from src.controllers.admin_sales_controller import (
     get_admin_sales_categories as admin_sales_categories_controller,
     get_admin_sales_metrics as admin_sales_metrics_controller,
 )
+from src.controllers.admin_users_controller import (
+    list_users as admin_users_list_controller,
+    update_user_privilege as admin_user_privilege_update_controller,
+)
 from src.services import list_available_coupons, list_product_categories
 from src import catalog_cache
 from flask import jsonify
@@ -518,6 +522,16 @@ def refresh():
 
 
 # Admin management endpoints (minimal scaffolding)
+@app.route("/api/v1/admin/users", methods=["GET"])
+def admin_users_list():
+    return admin_users_list_controller()
+
+
+@app.route("/api/v1/admin/users/<user_id>/privileges", methods=["PATCH"])
+def admin_user_privilege_update(user_id):
+    return admin_user_privilege_update_controller(user_id)
+
+
 @app.route("/api/v1/admin/reviews", methods=["GET"])
 def admin_reviews_list():
     return admin_list_reviews_controller(admin_list_reviews)

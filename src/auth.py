@@ -60,3 +60,23 @@ def review_moderator_required(f):
 		return response
 
 	return wrapper
+
+
+def bearer_only(f):
+	@wraps(f)
+	def wrapper(*args, **kwargs):
+		auth_header = request.headers.get("Authorization")
+		if (
+			(not auth_header or not auth_header.strip())
+			and request.headers.get("X-Op-Key")
+		):
+			response = jsonify({"error": "Administrative permission is required."})
+			response.status_code = 403
+			response.headers["Cache-Control"] = "no-store"
+			return response
+
+		# Personnel requests use bearer authorization only; never delegate via an op key.
+		g.op_session_valid = False
+		return f(*args, **kwargs)
+
+	return wrapper
