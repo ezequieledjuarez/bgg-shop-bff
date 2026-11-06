@@ -220,6 +220,111 @@ def admin_get_sales_categories(token=None, op_key=None):
     return proxy.get_admin_sales_categories(token, op_key=op_key)
 
 
+def _admin_user_error(payload):
+    for error in payload.get("errors") or []:
+        extensions = error.get("extensions") if isinstance(error, dict) else None
+        code = extensions.get("code") if isinstance(extensions, dict) else None
+        if code in ("UNAUTHENTICATED", "FORBIDDEN", "INVALID", "NOT_FOUND",
+                    "LAST_ACTIVE_SUPERUSER"):
+            field = extensions.get("field")
+            return proxy.UpstreamError(
+                "User management request rejected",
+                code,
+                field=[field] if isinstance(field, str) else None,
+                user_error=True,
+            )
+        break
+    return proxy.UpstreamError("GraphQL upstream returned errors")
+
+
+def _admin_user_projection(user):
+    if not isinstance(user, dict):
+        raise proxy.UpstreamError("GraphQL upstream returned an invalid user")
+    fields = {
+        "id": ("id",),
+        "email": ("email",),
+        "first_name": ("firstName", "first_name"),
+        "last_name": ("lastName", "last_name"),
+        "is_active": ("isActive", "is_active"),
+        "is_staff": ("isStaff", "is_staff"),
+        "is_superuser": ("isSuperuser", "is_superuser"),
+    }
+    result = {}
+    for output, aliases in fields.items():
+        value = next((user[key] for key in aliases if key in user), None)
+        if output == "id":
+            if not isinstance(value, (str, int)) or isinstance(value, bool):
+                raise proxy.UpstreamError("GraphQL upstream returned an invalid user")
+            value = str(value)
+        elif output in ("email", "first_name", "last_name"):
+            if not isinstance(value, str):
+                raise proxy.UpstreamError("GraphQL upstream returned an invalid user")
+        elif type(value) is not bool:
+            raise proxy.UpstreamError("GraphQL upstream returned an invalid user")
+        result[output] = value
+    return result
+
+
+def admin_list_users(filters, token):
+    query = """
+    query AdminUsers($search: String, $cursor: String, $limit: Int) {
+      adminUsers(search: $search, cursor: $cursor, limit: $limit) {
+        items { id email firstName lastName isActive isStaff isSuperuser }
+        nextCursor
+      }
+    }
+    """
+    payload = proxy._graphql_request(query, filters, token)
+    if payload.get("errors"):
+        raise _admin_user_error(payload)
+    page = (payload.get("data") or {}).get("adminUsers")
+    if not isinstance(page, dict) or not isinstance(page.get("items"), list):
+        raise proxy.UpstreamError("GraphQL upstream returned an invalid user page")
+    next_cursor = page.get("nextCursor", page.get("next_cursor"))
+    if next_cursor is not None and not isinstance(next_cursor, str):
+        raise proxy.UpstreamError("GraphQL upstream returned an invalid user page")
+    return {
+        "items": [_admin_user_projection(user) for user in page["items"]],
+        "next_cursor": next_cursor,
+    }
+
+
+def admin_update_user_privilege(user_id, privilege, enabled, token):
+    query = """
+    mutation AdminUpdateUserPrivilege($userId: ID!, $privilege: AdminUserPrivilege!, $enabled: Boolean!) {
+      adminUpdateUserPrivilege(userId: $userId, privilege: $privilege, enabled: $enabled) {
+        user { id email firstName lastName isActive isStaff isSuperuser }
+        userErrors { code field message }
+      }
+    }
+    """
+    payload = proxy._graphql_request(
+        query,
+        {"userId": user_id, "privilege": privilege, "enabled": enabled},
+        token,
+    )
+    if payload.get("errors"):
+        raise _admin_user_error(payload)
+    result = (payload.get("data") or {}).get("adminUpdateUserPrivilege")
+    if not isinstance(result, dict):
+        raise proxy.UpstreamError("GraphQL upstream returned an invalid privilege result")
+    errors = result.get("userErrors") or []
+    if errors:
+        error = errors[0] if isinstance(errors[0], dict) else {}
+        code = error.get("code")
+        if code in ("UNAUTHENTICATED", "FORBIDDEN", "INVALID", "NOT_FOUND",
+                    "LAST_ACTIVE_SUPERUSER"):
+            field = error.get("field")
+            raise proxy.UpstreamError(
+                "User management request rejected",
+                code,
+                field=[field] if isinstance(field, str) else None,
+                user_error=True,
+            )
+        raise proxy.UpstreamError("GraphQL upstream returned errors")
+    return _admin_user_projection(result.get("user"))
+
+
 def admin_list_coupons(token=None, op_key=None):
     return proxy.list_admin_coupons(token, op_key=op_key)
 
