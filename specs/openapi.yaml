@@ -4,8 +4,10 @@ info:
   version: 1.0.0
   description: REST API exposed by the BFF for the board-game catalog, shopping cart,
     and purchase orders. Administrative operations require an active authenticated
-    user with is_staff or is_superuser; an operation key alone does not grant admin
-    access. These contracts do not establish runtime conformance.
+    user with is_staff or is_superuser, except personnel selection and privilege
+    administration, which require an active is_superuser regardless of is_staff.
+    An operation key alone does not grant admin access. These contracts do not
+    establish runtime conformance.
 paths:
   /internal/v1/catalog-events:
     post:
@@ -1314,6 +1316,141 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+  /api/v1/admin/users:
+    get:
+      tags:
+      - Administration
+      summary: List existing users for privilege administration
+      description: >-
+        Delegates to Core adminUsers(search, cursor, limit). Requires a
+        bearer-authenticated active is_superuser=true user, including when
+        is_staff=false. Both backends authorize against current saved role state
+        on every request, not token role claims. Staff-only, inactive and
+        operation-key-only callers receive 403; missing/invalid authentication
+        receives 401. Authorization precedes disclosure of personnel data.
+        Includes inactive users and existing superusers. Returns only the safe
+        user projection; never credentials or authentication secrets. Uses opaque
+        signed cursor pagination ordered by user ID ascending. Search is a
+        case-insensitive substring match over email, first_name and last_name.
+        The cursor continues after the last user ID; limit defaults to 50 and
+        has a maximum of 100. Existing staff operational access is unchanged.
+        All responses are non-cacheable and all errors are sanitized.
+      operationId: adminListUsers
+      x-implementation-status: planned
+      security:
+      - BearerAuth: []
+      parameters:
+      - name: search
+        in: query
+        required: false
+        description: >-
+          Case-insensitive substring search over email, first_name and last_name.
+        schema:
+          type: string
+          minLength: 1
+          maxLength: 200
+      - name: cursor
+        in: query
+        required: false
+        description: Opaque signed cursor copied unchanged from next_cursor; omit for the first page.
+        schema:
+          type: string
+          minLength: 1
+          maxLength: 512
+      - name: limit
+        in: query
+        required: false
+        description: Maximum users per page.
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 100
+          default: 50
+      responses:
+        '200':
+          description: Safe user page; an empty result has items [] and next_cursor null.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/UserManagementNoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminUserPage'
+        '400':
+          $ref: '#/components/responses/UserManagementInvalidRequest'
+        '401':
+          $ref: '#/components/responses/UserManagementUnauthorized'
+        '403':
+          $ref: '#/components/responses/UserManagementForbidden'
+        '502':
+          $ref: '#/components/responses/UserManagementUpstreamFailure'
+  /api/v1/admin/users/{user_id}/privileges:
+    patch:
+      tags:
+      - Administration
+      summary: Change exactly one existing user privilege
+      description: >-
+        Delegates to Core adminUpdateUserPrivilege(userId, privilege, enabled).
+        Requires bearer-authenticated active is_superuser=true authority
+        independently of is_staff. Both backends check current saved roles on
+        every request; token role claims and operation keys are not authority.
+        Staff-only, inactive and operation-key-only callers receive 403;
+        missing/invalid authentication receives 401. Authorization precedes
+        target lookup or disclosure. Changes only the selected staff or
+        superuser privilege and preserves the other flag and all other account
+        fields. Granting superuser does not grant staff. Any existing account
+        may be targeted, including inactive users, existing superusers and the
+        actor. Revocation of an active user's superuser privilege, including
+        self-demotion, requires another active superuser to remain; otherwise
+        return 409 without writes. Concurrent revocations must preserve this
+        invariant; any denied or failed update has no partial writes.
+        Return the saved user projection only after commit. Subsequent
+        authorization checks in already-active sessions use saved flags.
+        No credential, authentication secret or internal error detail is
+        returned. The privilege discriminator is exactly is_staff or
+        is_superuser. Core LAST_ACTIVE_SUPERUSER maps to HTTP 409. Existing staff
+        operational behavior is unchanged. All responses are non-cacheable and
+        sanitized.
+      operationId: adminUpdateUserPrivilege
+      x-implementation-status: planned
+      security:
+      - BearerAuth: []
+      parameters:
+      - name: user_id
+        in: path
+        required: true
+        description: Existing account identifier, unchanged from AdminUser.id and Core User.id.
+        schema:
+          type: string
+          minLength: 1
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminUpdateUserPrivilegeRequest'
+      responses:
+        '200':
+          description: Saved user after a successful single-privilege update.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/UserManagementNoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminUser'
+        '400':
+          $ref: '#/components/responses/UserManagementInvalidRequest'
+        '401':
+          $ref: '#/components/responses/UserManagementUnauthorized'
+        '403':
+          $ref: '#/components/responses/UserManagementForbidden'
+        '404':
+          $ref: '#/components/responses/UserManagementNotFound'
+        '409':
+          $ref: '#/components/responses/UserManagementLastSuperuser'
+        '502':
+          $ref: '#/components/responses/UserManagementUpstreamFailure'
   /api/v1/admin/reviews:
     get:
       tags:
@@ -2596,6 +2733,12 @@ components:
         default: 50
       example: 50
   headers:
+    UserManagementNoStore:
+      required: true
+      description: Prevents caching of personnel data and privilege-management responses.
+      schema:
+        type: string
+        const: no-store
     AdminNoStore:
       required: true
       description: Prevents caching of moderation data and responses.
@@ -2610,6 +2753,71 @@ components:
         enum:
         - no-store
   responses:
+    UserManagementInvalidRequest:
+      description: >-
+        Invalid search, cursor, limit, user identifier or single-privilege body.
+        Core INVALID maps to 400. Only sanitized public field errors are returned.
+      headers:
+        Cache-Control:
+          $ref: '#/components/headers/UserManagementNoStore'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/AdminFieldErrorResponse'
+    UserManagementUnauthorized:
+      description: Missing or invalid authentication; Core UNAUTHENTICATED maps to 401.
+      headers:
+        Cache-Control:
+          $ref: '#/components/headers/UserManagementNoStore'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/AdminErrorResponse'
+    UserManagementForbidden:
+      description: >-
+        Inactive, staff-only, other non-superuser or operation-key-only caller.
+        Core FORBIDDEN maps to 403. No personnel data or privilege changes.
+      headers:
+        Cache-Control:
+          $ref: '#/components/headers/UserManagementNoStore'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/AdminErrorResponse'
+    UserManagementNotFound:
+      description: Authorized caller's target user does not exist; Core NOT_FOUND maps to 404.
+      headers:
+        Cache-Control:
+          $ref: '#/components/headers/UserManagementNoStore'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/AdminErrorResponse'
+    UserManagementLastSuperuser:
+      description: >-
+        Revocation would leave no active superuser. No partial writes.
+        Core LAST_ACTIVE_SUPERUSER maps to HTTP 409. The public code is
+        LAST_ACTIVE_SUPERUSER and the message is sanitized, never raw upstream text.
+      headers:
+        Cache-Control:
+          $ref: '#/components/headers/UserManagementNoStore'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/UserManagementLastSuperuserResponse'
+    UserManagementUpstreamFailure:
+      description: >-
+        Core unavailable or invalid response. Never implies that an unknown
+        mutation outcome was rolled back. Return only a stable public error;
+        never forward upstream details, exceptions, traces, internal URLs,
+        credentials or authentication secrets.
+      headers:
+        Cache-Control:
+          $ref: '#/components/headers/UserManagementNoStore'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/AdminErrorResponse'
     ReviewModerationInvalidRequest:
       description: Invalid query or action; does not reveal upstream details.
       headers:
@@ -3197,6 +3405,75 @@ components:
           minLength: 1
           maxLength: 128
           writeOnly: true
+    AdminUser:
+      type: object
+      additionalProperties: false
+      description: >-
+        Exact safe projection of Core User for Superadmin-only personnel
+        selection and privilege updates. Camel-case Core names map to these
+        snake-case fields. Credentials and authentication secrets are excluded.
+      required: [id, email, first_name, last_name, is_active, is_staff, is_superuser]
+      properties:
+        id:
+          type: string
+          description: Existing Core User.id, represented as a string like AuthUser.id.
+        email:
+          type: string
+          format: email
+        first_name:
+          type: string
+        last_name:
+          type: string
+        is_active:
+          type: boolean
+        is_staff:
+          type: boolean
+        is_superuser:
+          type: boolean
+    AdminUserPage:
+      type: object
+      additionalProperties: false
+      required: [items, next_cursor]
+      properties:
+        items:
+          type: array
+          maxItems: 100
+          items:
+            $ref: '#/components/schemas/AdminUser'
+        next_cursor:
+          type: [string, 'null']
+          description: Core nextCursor mapped unchanged; null at the end.
+    AdminUpdateUserPrivilegeRequest:
+      type: object
+      additionalProperties: false
+      required: [privilege, enabled]
+      properties:
+        privilege:
+          type: string
+          enum: [is_staff, is_superuser]
+          description: Select exactly one existing privilege; no other account field may be updated.
+        enabled:
+          type: boolean
+          description: Desired value of only the selected privilege; no coercion.
+    UserManagementLastSuperuserResponse:
+      type: object
+      additionalProperties: false
+      required: [errors]
+      properties:
+        errors:
+          type: array
+          minItems: 1
+          items:
+            type: object
+            additionalProperties: false
+            required: [code, message]
+            properties:
+              code:
+                type: string
+                const: LAST_ACTIVE_SUPERUSER
+              message:
+                type: string
+                description: Sanitized public message without upstream or internal details.
     AuthUser:
       type: object
       required:
