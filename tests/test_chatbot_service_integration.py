@@ -133,6 +133,7 @@ def chat(monkeypatch):
     monkeypatch.setenv(
         "CHAT_ASSERTION_SECRET", "T015-synthetic-assertion-secret-local-tests-only"
     )
+    monkeypatch.setenv("FLASK_SKIP_DOTENV", "1")
     monkeypatch.setenv("SALEOR_GRAPHQL_URL", "http://core.test/graphql/")
     monkeypatch.setattr(proxy.requests, "post", state.core.post)
     monkeypatch.setattr(rate_limit, "_client", lambda: state.redis)
@@ -144,6 +145,7 @@ def chat(monkeypatch):
     app_module = importlib.util.module_from_spec(spec)
     monkeypatch.setitem(sys.modules, spec.name, app_module)
     spec.loader.exec_module(app_module)
+    state.app_module = app_module
     state.provider_calls_at_import = len(state.provider_calls)
     state.answer_calls_at_import = len(state.answer_calls)
     app_module.app.config["TESTING"] = True

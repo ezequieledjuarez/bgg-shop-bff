@@ -41,14 +41,20 @@ class FakeResponse:
 def _configured_provider(monkeypatch, local_provider=None):
     monkeypatch.setenv("OPENROUTER_API_KEY", "synthetic-test-key")
     monkeypatch.setenv("OPENROUTER_MODEL", "synthetic/provider-model")
+    monkeypatch.delenv("OPENROUTER_API_URL", raising=False)
     return OpenRouterWithLocalFallbackProvider(
         local_provider=local_provider or FakeLocalProvider()
     )
 
 
-def test_openrouter_success_uses_expected_chat_completion_request(monkeypatch):
+@pytest.mark.parametrize("configured_url", [None, OPENROUTER_URL])
+def test_openrouter_success_uses_expected_chat_completion_request(
+    monkeypatch, configured_url
+):
     local_provider = FakeLocalProvider()
     provider = _configured_provider(monkeypatch, local_provider)
+    if configured_url is not None:
+        monkeypatch.setenv("OPENROUTER_API_URL", configured_url)
     calls = []
 
     def fake_post(url, **kwargs):
@@ -61,6 +67,7 @@ def test_openrouter_success_uses_expected_chat_completion_request(monkeypatch):
 
     assert provider.invoke("Synthetic grounded prompt") == "Grounded answer."
     assert local_provider.prompts == []
+    assert calls[0][1]["headers"]["Authorization"] == "Bearer " + "synthetic-test-key"
     assert calls == [
         (
             OPENROUTER_URL,
@@ -82,6 +89,59 @@ def test_openrouter_success_uses_expected_chat_completion_request(monkeypatch):
             },
         )
     ]
+
+
+@pytest.mark.parametrize(
+    "configured_url",
+    [
+        "",
+        "http://openrouter.ai/api/v1/chat/completions",
+        "https://example.com/api/v1/chat/completions",
+        "https://openrouter.ai.example.com/api/v1/chat/completions",
+        "https://user@openrouter.ai/api/v1/chat/completions",
+        "https://openrouter.ai/api/v1/chat/completions?key=synthetic",
+        "https://openrouter.ai/api/v1/chat/completions#fragment",
+        "https://openrouter.ai:443/api/v1/chat/completions",
+        "https://openrouter.ai/api/v1/chat/completions/",
+    ],
+)
+def test_invalid_openrouter_url_uses_local_without_remote_call(
+    monkeypatch, configured_url
+):
+    local_provider = FakeLocalProvider()
+    provider = _configured_provider(monkeypatch, local_provider)
+    monkeypatch.setenv("OPENROUTER_API_URL", configured_url)
+    remote_calls = []
+    monkeypatch.setattr(
+        "src.chatbot.provider.requests.post",
+        lambda *args, **kwargs: remote_calls.append((args, kwargs)),
+    )
+
+    assert provider.invoke("Synthetic prompt") == "Local fallback answer."
+    assert local_provider.prompts == ["Synthetic prompt"]
+    assert remote_calls == []
+
+
+def test_invalid_url_and_local_failure_are_sanitized(monkeypatch):
+    local_provider = FakeLocalProvider(error=RuntimeError("synthetic secret"))
+    provider = _configured_provider(monkeypatch, local_provider)
+    monkeypatch.setenv("OPENROUTER_API_URL", "https://example.com/synthetic-secret")
+    remote_calls = []
+    monkeypatch.setattr(
+        "src.chatbot.provider.requests.post",
+        lambda *args, **kwargs: remote_calls.append((args, kwargs)),
+    )
+
+    class ProviderRag:
+        def answer(self, query):
+            return provider.invoke(query)
+
+    with pytest.raises(ChatbotServiceUnavailable) as error:
+        GroundedAnswerService(ProviderRag()).answer("Synthetic private prompt")
+
+    assert str(error.value) == "The chatbot answer service is unavailable."
+    assert local_provider.prompts == ["Synthetic private prompt"]
+    assert remote_calls == []
 
 
 @pytest.mark.parametrize(

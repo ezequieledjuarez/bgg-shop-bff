@@ -75,8 +75,10 @@ class OpenRouterWithLocalFallbackProvider:
     def _openrouter_configuration():
         api_key = os.getenv("OPENROUTER_API_KEY")
         model = os.getenv("OPENROUTER_MODEL")
+        url = os.getenv("OPENROUTER_API_URL", OPENROUTER_URL)
         if (
-            not isinstance(api_key, str)
+            url != OPENROUTER_URL
+            or not isinstance(api_key, str)
             or not api_key.strip()
             or any(character.isspace() for character in api_key.strip())
             or not isinstance(model, str)
@@ -84,12 +86,12 @@ class OpenRouterWithLocalFallbackProvider:
             or any(character.isspace() for character in model.strip())
         ):
             return None
-        return api_key.strip(), model.strip()
+        return api_key.strip(), model.strip(), url
 
     @staticmethod
-    def _openrouter_answer(prompt, api_key, model):
+    def _openrouter_answer(prompt, api_key, model, url):
         response = requests.post(
-            OPENROUTER_URL,
+            url,
             headers={
                 "Authorization": f"Bearer {api_key}",
                 "Content-Type": "application/json",
