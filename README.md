@@ -235,6 +235,14 @@ El BFF implementa actualmente dos rutas:
 
 Estado y límites comprobados de Feature 013:
 
+- La generación de respuestas usa OpenRouter (`OPENROUTER_API_KEY` y
+  `OPENROUTER_MODEL`) cuando está configurado; ante falta de configuración,
+  error de transporte/HTTP o respuesta inválida, recurre a Ollama local
+  (`deepseek-r1:8b`). Los embeddings permanecen en Ollama. Las pruebas no leen
+  `.env` ni llaman al servicio externo: simulan la respuesta HTTP con valores
+  sintéticos. La selección enfocada de proveedor, RAG e integración pasó **51
+  pruebas, 12 warnings**, también confirmadas por revisión independiente y
+  spot-check local. No se validaron credenciales reales contra OpenRouter.
 - La selección BFF de guardrails, privacidad, RAG, catálogo y conversaciones pasó **69 pruebas, 0 fallos, 99 warnings**. La selección de integración/guardrails/privacidad pasó **64 pruebas, 0 fallos, 87 warnings**. Los tests RAG usan fakes deterministas; no son aceptación de Chroma local.
 - LangChain y ChromaDB siguen siendo requisitos aprobados. En el entorno Python local comprobado, el import probe no pudo importar `langchain`; no instales dependencias ni contactes registries como parte de esta guía.
 - La suite de contratos BFF reportó **7 aprobadas y 9 fallidas**, en pruebas existentes de producto/carrito/cupón/checkout/wishlist/pedidos. No se conoce causa o baseline; no se atribuyen esos fallos al chatbot ni se consideran corregidos.

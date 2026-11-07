@@ -1,7 +1,11 @@
 import os
 from pathlib import Path
 
-from src.chatbot.provider import OllamaChatProvider, local_ollama_base_url
+from src.chatbot.provider import (
+    OllamaChatProvider,
+    OpenRouterWithLocalFallbackProvider,
+    local_ollama_base_url,
+)
 from src.chatbot.rag import ApprovedFaqRag
 
 
@@ -67,7 +71,9 @@ def create_local_chatbot_service(
         embeddings=embeddings,
         vector_store=vector_store,
         retriever=retriever,
-        llm=OllamaChatProvider(base_url=base_url),
+        llm=OpenRouterWithLocalFallbackProvider(
+            local_provider=OllamaChatProvider(base_url=base_url)
+        ),
     )
     service = GroundedAnswerService(rag)
     service.ingest_approved_sources()
