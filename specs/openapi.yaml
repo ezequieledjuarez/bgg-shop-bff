@@ -251,6 +251,211 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+  /api/v1/chat/conversations:
+    post:
+      tags:
+      - Chat
+      summary: Create a buyer chat conversation
+      description: >-
+        Creates a conversation for the authenticated buyer or for a new anonymous
+        browser scope. The BFF issues an opaque HttpOnly chat_session cookie for
+        an anonymous scope when one is not already present. This cookie lasts
+        only for the browser session and has no Max-Age or Expires attribute.
+        The request never accepts an owner identifier or an internal Core
+        assertion. For an anonymous scope, the BFF derives a fresh short-lived
+        HMAC-SHA256 assertion from the chat_session cookie for each internal
+        Core call and sends it only in X-Chat-Assertion; the browser never
+        supplies or receives that assertion. Core validates the assertion and
+        derives ownership only from its validated subject. When a bearer token
+        is supplied, the new conversation belongs to that authenticated user
+        and is not merged with or switched to an anonymous scope.
+      operationId: createChatConversation
+      x-implementation-status: planned
+      responses:
+        '201':
+          description: A new empty conversation was created.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/ChatNoStore'
+            Set-Cookie:
+              required: false
+              description: >-
+                Present for a newly created anonymous browser scope only.
+                The opaque chat_session cookie is HttpOnly, SameSite=Lax, and
+                Secure outside local development. It is a non-persistent
+                browser-session cookie with no Max-Age or Expires attribute
+                and is not a user identifier.
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChatConversationResponse'
+        '429':
+          $ref: '#/components/responses/ChatRateLimited'
+        '401':
+          $ref: '#/components/responses/ChatUnauthorized'
+        '503':
+          $ref: '#/components/responses/ChatUnavailable'
+      security:
+      - BearerAuth: []
+      - ChatSessionCookie: []
+      - {}
+  /api/v1/chat/conversations/{conversation_id}:
+    parameters:
+    - name: conversation_id
+      in: path
+      required: true
+      description: Opaque conversation identifier issued by the BFF.
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 128
+    get:
+      tags:
+      - Chat
+      summary: Read an owned chat conversation
+      description: >-
+        Returns only the caller's conversation. The BFF resolves ownership from
+        the current authenticated buyer or the same valid anonymous browser
+        session; it never trusts an owner ID in the request. Missing, expired,
+        and cross-scope conversations all return the same not-found response.
+        When a bearer token is supplied it is authoritative; the anonymous
+        cookie is used only when no bearer token is present. For anonymous
+        Core calls, the BFF creates a fresh assertion for each call and sends
+        it only in the internal X-Chat-Assertion header. No assertion or owner
+        identifier is accepted from or returned to the browser. The anonymous
+        chat_session cookie is non-persistent and lasts only for the browser
+        session. No conversation messages or metadata are cached.
+      operationId: getChatConversation
+      x-implementation-status: planned
+      responses:
+        '200':
+          description: The caller-owned conversation and its persisted messages.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/ChatNoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChatConversationResponse'
+        '429':
+          $ref: '#/components/responses/ChatRateLimited'
+        '401':
+          $ref: '#/components/responses/ChatUnauthorized'
+        '404':
+          $ref: '#/components/responses/ChatNotFound'
+        '503':
+          $ref: '#/components/responses/ChatUnavailable'
+      security:
+      - BearerAuth: []
+      - ChatSessionCookie: []
+    delete:
+      tags:
+      - Chat
+      summary: Delete an owned chat conversation
+      description: >-
+        Deletes only the caller's Core-owned PostgreSQL conversation and its
+        messages. This operation never deletes, changes, or re-ingests ChromaDB
+        knowledge. Missing, expired, and cross-scope conversations all return
+        the same not-found response. A bearer token is authoritative when
+        supplied; the anonymous cookie is used only without a bearer token.
+        The BFF uses a fresh internal X-Chat-Assertion for each anonymous Core
+        call; the browser does not supply or receive this assertion. The
+        anonymous chat_session cookie is non-persistent and lasts only for the
+        browser session.
+      operationId: deleteChatConversation
+      x-implementation-status: planned
+      responses:
+        '204':
+          description: The caller-owned conversation was deleted.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/ChatNoStore'
+        '429':
+          $ref: '#/components/responses/ChatRateLimited'
+        '401':
+          $ref: '#/components/responses/ChatUnauthorized'
+        '404':
+          $ref: '#/components/responses/ChatNotFound'
+        '503':
+          $ref: '#/components/responses/ChatUnavailable'
+      security:
+      - BearerAuth: []
+      - ChatSessionCookie: []
+  /api/v1/chat/conversations/{conversation_id}/messages:
+    parameters:
+    - name: conversation_id
+      in: path
+      required: true
+      description: Opaque conversation identifier issued by the BFF.
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 128
+    post:
+      tags:
+      - Chat
+      summary: Submit a message and receive a grounded chat reply
+      description: >-
+        Accepts at most 2,000 characters and applies a shared limit of 10
+        requests per minute per authenticated user or anonymous browser session
+        across chatbot endpoints. The BFF applies its
+        shop-scope guard before any retrieval, model, catalog, or Core
+        conversation call. Out-of-scope, personal, account, and order content
+        is not forwarded, persisted, or echoed. Only approved FAQ material and
+        the existing live catalog read may be used. The model receives at most
+        the 10 previous conversation turns. Dynamic catalog results are never
+        written to ChromaDB. The response omits the submitted text and contains
+        only approved-source metadata and facts returned by Core. Anonymous
+        ownership is derived by Core from a validated BFF assertion. A bearer
+        token is authoritative when supplied; the
+        anonymous cookie is used only when no bearer token is present. For
+        anonymous Core calls, the BFF sends a fresh assertion only through
+        internal X-Chat-Assertion; it is not a browser-supplied request field.
+        The anonymous chat_session cookie is non-persistent and lasts only for
+        the browser session. A message mixing shop questions with personal,
+        account, order, or transactional content is neither processed nor
+        persisted; the buyer is asked to resubmit only the shop-related part.
+        An unclear topic receives a shop-related clarification request without
+        persistence or Core, retrieval, model, or tool calls. If it remains
+        unclear or is out of scope, the BFF politely refuses without persisting
+        or echoing the submitted text. English and Spanish questions are
+        supported, and user-facing assistant text uses the language of the
+        submitted question for FAQ answers, catalog recommendations, refusals,
+        clarifications, and fallbacks. This does not relax shop-scope, privacy,
+        ownership, grounding, or no-fabrication safeguards.
+      operationId: sendChatMessage
+      x-implementation-status: planned
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ChatMessageRequest'
+      responses:
+        '200':
+          description: A grounded answer, recommendation, refusal, or fallback.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/ChatNoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChatReplyResponse'
+        '400':
+          $ref: '#/components/responses/ChatInvalidRequest'
+        '401':
+          $ref: '#/components/responses/ChatUnauthorized'
+        '404':
+          $ref: '#/components/responses/ChatNotFound'
+        '429':
+          $ref: '#/components/responses/ChatRateLimited'
+        '503':
+          $ref: '#/components/responses/ChatUnavailable'
+      security:
+      - BearerAuth: []
+      - ChatSessionCookie: []
   /api/v1/products:
     get:
       tags:
@@ -2613,6 +2818,22 @@ components:
       name: X-Op-Key
       description: Operations key for privileged internal operations (one-time raw
         key shown at creation).
+    ChatSessionCookie:
+      type: apiKey
+      in: cookie
+      name: chat_session
+      description: >-
+        Opaque BFF-issued browser-session credential for anonymous chat ownership.
+        It is HttpOnly and SameSite=Lax, and Secure outside local development.
+        It is non-persistent, has no Max-Age or Expires attribute, and lasts
+        only for the browser session.
+        It is not an owner ID or an assertion. For anonymous Core calls, the
+        BFF derives a fresh HMAC-SHA256 assertion from this cookie and sends
+        that assertion only in the internal X-Chat-Assertion header; the
+        browser never supplies or receives it. Core validates the assertion
+        and derives anonymous ownership only from its validated subject. When
+        a bearer token is present, the authenticated user scope is authoritative
+        and is not merged with or switched to the anonymous browser scope.
   parameters:
     CreditIdempotencyKey:
       name: Idempotency-Key
@@ -2733,6 +2954,13 @@ components:
         default: 50
       example: 50
   headers:
+    ChatNoStore:
+      required: true
+      description: Prevents caching of private chat content and session metadata.
+      schema:
+        type: string
+        enum:
+        - no-store
     UserManagementNoStore:
       required: true
       description: Prevents caching of personnel data and privilege-management responses.
@@ -2753,6 +2981,65 @@ components:
         enum:
         - no-store
   responses:
+    ChatInvalidRequest:
+      description: >-
+        The message is blank or exceeds 2,000 characters. The response does not
+        echo submitted content or include internal diagnostics.
+      headers:
+        Cache-Control:
+          $ref: '#/components/headers/ChatNoStore'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ChatErrorResponse'
+    ChatUnauthorized:
+      description: Missing or invalid authentication/session scope.
+      headers:
+        Cache-Control:
+          $ref: '#/components/headers/ChatNoStore'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ChatErrorResponse'
+    ChatNotFound:
+      description: >-
+        The conversation is missing, expired, or owned by another user/session.
+        The response does not reveal which condition occurred.
+      headers:
+        Cache-Control:
+          $ref: '#/components/headers/ChatNoStore'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ChatErrorResponse'
+    ChatUnavailable:
+      description: >-
+        Core, approved knowledge retrieval, the local model provider, or the
+        catalog capability is unavailable. Only a stable sanitized error is
+        returned; no upstream exception, trace, URL, credential, or submitted
+        content is exposed.
+      headers:
+        Cache-Control:
+          $ref: '#/components/headers/ChatNoStore'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ChatErrorResponse'
+    ChatRateLimited:
+      description: The authenticated user or anonymous browser session exceeded 10 chatbot requests in one minute.
+      headers:
+        Cache-Control:
+          $ref: '#/components/headers/ChatNoStore'
+        Retry-After:
+          required: true
+          description: Minimum number of seconds before another chatbot request.
+          schema:
+            type: integer
+            minimum: 1
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ChatErrorResponse'
     UserManagementInvalidRequest:
       description: >-
         Invalid search, cursor, limit, user identifier or single-privilege body.
@@ -4646,6 +4933,155 @@ components:
                 nullable: true
                 items:
                   type: string
+    ChatMessageRequest:
+      type: object
+      additionalProperties: false
+      required:
+      - message
+      properties:
+        message:
+          type: string
+          minLength: 1
+          maxLength: 2000
+          description: >-
+            Shop-related buyer question only. Personal, account, order, and
+            transactional details are rejected before retrieval or forwarding.
+    ChatSource:
+      type: object
+      additionalProperties: false
+      required:
+      - title
+      properties:
+        title:
+          type: string
+          minLength: 1
+          maxLength: 200
+        url:
+          type: string
+          format: uri
+          maxLength: 2048
+    ChatMessage:
+      type: object
+      additionalProperties: false
+      required:
+      - id
+      - role
+      - content
+      - created_at
+      - sources
+      properties:
+        id:
+          type: string
+          minLength: 1
+          maxLength: 128
+        role:
+          type: string
+          enum:
+          - user
+          - assistant
+        content:
+          type: string
+          description: >-
+            Persisted in-scope conversation text only. Unsafe/out-of-scope
+            submissions are not persisted or echoed.
+        created_at:
+          type: string
+          format: date-time
+        sources:
+          type: array
+          items:
+            $ref: '#/components/schemas/ChatSource'
+    ChatConversation:
+      type: object
+      additionalProperties: false
+      required:
+      - id
+      - created_at
+      - updated_at
+      - expires_at
+      - messages
+      properties:
+        id:
+          type: string
+          minLength: 1
+          maxLength: 128
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+          description: Time of the most recent persisted activity.
+        expires_at:
+          type: string
+          format: date-time
+          description: 30 days after the most recent activity.
+        messages:
+          type: array
+          items:
+            $ref: '#/components/schemas/ChatMessage'
+    ChatConversationResponse:
+      type: object
+      additionalProperties: false
+      required:
+      - conversation
+      properties:
+        conversation:
+          $ref: '#/components/schemas/ChatConversation'
+    ChatReplyResponse:
+      type: object
+      additionalProperties: false
+      required:
+      - conversation_id
+      - answer
+      - sources
+      - recommendations
+      - created_at
+      properties:
+        conversation_id:
+          type: string
+          minLength: 1
+          maxLength: 128
+        answer:
+          type: string
+          description: >-
+            Grounded answer, refusal, clarification, or uncertainty fallback.
+            English and Spanish are supported, and assistant text matches the
+            language of the submitted question. It must not repeat protected
+            details from the submitted message.
+        sources:
+          type: array
+          description: Approved knowledge sources used for this answer, when available.
+          items:
+            $ref: '#/components/schemas/ChatSource'
+        recommendations:
+          type: array
+          description: >-
+            Current catalog products returned by Core for this request only.
+            Product facts must not be inferred or fabricated.
+          items:
+            $ref: '#/components/schemas/Product'
+        created_at:
+          type: string
+          format: date-time
+    ChatErrorResponse:
+      type: object
+      additionalProperties: false
+      required:
+      - code
+      - error
+      properties:
+        code:
+          type: string
+          enum:
+          - INVALID_REQUEST
+          - UNAUTHENTICATED
+          - NOT_FOUND
+          - RATE_LIMITED
+          - SERVICE_UNAVAILABLE
+        error:
+          type: string
+          description: Stable sanitized public message; never contains submitted text or upstream details.
     ErrorResponse:
       type: object
       required:

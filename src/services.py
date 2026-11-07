@@ -10,6 +10,36 @@ def authenticate_account(payload):
     return proxy.authenticate_account(payload)
 
 
+def create_chat_conversation(token=None, cookie_value=None):
+    return proxy.create_chat_conversation(token, cookie_value)
+
+
+def record_chat_exchange(
+    conversation_id,
+    user_message,
+    assistant_message,
+    token=None,
+    cookie_value=None,
+    sources=None,
+):
+    return proxy.record_chat_exchange(
+        conversation_id,
+        user_message,
+        assistant_message,
+        token,
+        cookie_value,
+        sources,
+    )
+
+
+def recommend_catalog_products(filters, token=None):
+    result = proxy.list_products(page=1, page_size=50, token=token, **filters)
+    items = result.get("items") if isinstance(result, dict) else None
+    if not isinstance(items, list):
+        raise proxy.UpstreamError("Catalog returned an invalid product list")
+    return items
+
+
 def list_products(**filters):
     return catalog_response(
         "products",

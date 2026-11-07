@@ -2,9 +2,13 @@ import json
 import re
 import os
 import uuid
+import hashlib
+import hmac
+import time
 from datetime import datetime
 from urllib.parse import urlsplit, urlunsplit
 
+import jwt
 import requests
 import logging
 
@@ -22,6 +26,10 @@ class UpstreamError(Exception):
         self.code = code
         self.field = field
         self.user_error = user_error
+
+
+class ChatAssertionConfigurationError(Exception):
+    pass
 
 
 def _required_text(payload, name, minimum=1, maximum=254):
@@ -362,9 +370,18 @@ def graphql_auth_headers(token=None, op_key=None):
     return headers
 
 
-def _graphql_request(query, variables, token=None, op_key=None, map_wishlist_errors=False):
+def _graphql_request(
+    query,
+    variables,
+    token=None,
+    op_key=None,
+    map_wishlist_errors=False,
+    extra_headers=None,
+):
     request_id = str(uuid.uuid4())
     headers = graphql_auth_headers(token, op_key)
+    if extra_headers:
+        headers.update(extra_headers)
     try:
         response = requests.post(
             os.getenv("SALEOR_GRAPHQL_URL", DEFAULT_GRAPHQL_URL),
@@ -394,6 +411,220 @@ def _graphql_request(query, variables, token=None, op_key=None, map_wishlist_err
             if code == "PRODUCT_NOT_FOUND" or message == "Product not found.":
                 raise UpstreamError("The requested game does not exist.", "PRODUCT_NOT_FOUND")
     return payload
+
+
+def _chat_assertion_secret():
+    secret = os.getenv("CHAT_ASSERTION_SECRET", "")
+    if (
+        not isinstance(secret, str)
+        or not secret.isascii()
+        or len(secret) < 32
+        or len(set(secret)) < 16
+        or any(
+            candidate
+            and hmac.compare_digest(secret, candidate)
+            for candidate in (
+                os.getenv("SECRET_KEY", ""),
+                os.getenv("OPKEY_INTERNAL_SECRET", ""),
+                os.getenv("CATALOG_EVENTS_HMAC_SECRET", ""),
+            )
+        )
+    ):
+        raise ChatAssertionConfigurationError
+    return secret
+
+
+def validate_chat_assertion_configuration():
+    _chat_assertion_secret()
+
+
+def _chat_assertion(cookie_value):
+    secret = _chat_assertion_secret()
+
+    issued_at = int(time.time())
+    claims = {
+        "iss": "bgg-shop-bff",
+        "aud": "bgg-shop-core",
+        "sub": hashlib.sha256(cookie_value.encode("utf-8")).hexdigest(),
+        "scope": "chat:conversations",
+        "iat": issued_at,
+        "exp": issued_at + 60,
+        "jti": uuid.uuid4().hex,
+    }
+    return jwt.encode(
+        claims,
+        secret,
+        algorithm="HS256",
+        headers={"typ": "chat-assertion"},
+    )
+
+
+def _chat_core_headers(token, cookie_value):
+    if token is not None:
+        return {}
+    if not isinstance(cookie_value, str) or not cookie_value:
+        raise ChatAssertionConfigurationError
+    return {"X-Chat-Assertion": _chat_assertion(cookie_value)}
+
+
+def get_chat_user_id(token):
+    payload = _graphql_request(
+        "query ChatRateLimitIdentity { me { id } }",
+        {},
+        token=token,
+    )
+    for error in payload.get("errors") or []:
+        if not isinstance(error, dict):
+            raise UpstreamError("Chat identity lookup failed")
+        extensions = error.get("extensions")
+        code = extensions.get("code") if isinstance(extensions, dict) else None
+        if (
+            code == "UNAUTHENTICATED"
+            or error.get("message") == "Authentication is required."
+        ):
+            raise UpstreamError("Chat authentication is required", "UNAUTHENTICATED")
+        raise UpstreamError("Chat identity lookup failed")
+
+    data = payload.get("data")
+    if not isinstance(data, dict):
+        raise UpstreamError("Chat identity lookup returned an invalid response")
+    user = data.get("me")
+    if user is None:
+        raise UpstreamError("Chat authentication is required", "UNAUTHENTICATED")
+    if not isinstance(user, dict):
+        raise UpstreamError("Chat identity lookup returned an invalid response")
+    user_id = user.get("id")
+    if not isinstance(user_id, str) or not user_id.strip():
+        raise UpstreamError("Chat identity lookup returned an invalid response")
+    return user_id
+
+
+def _chat_conversation_from_core(conversation):
+    if not isinstance(conversation, dict):
+        raise UpstreamError("Chat Core returned an invalid response")
+    try:
+        messages = []
+        for message in conversation["messages"]:
+            messages.append(
+                {
+                    "id": str(message["id"]),
+                    "role": str(message["role"]).lower(),
+                    "content": message["content"],
+                    "created_at": message["createdAt"],
+                    "sources": [
+                        {
+                            "title": source["title"],
+                            **(
+                                {"url": source["url"]}
+                                if source.get("url") is not None
+                                else {}
+                            ),
+                        }
+                        for source in message.get("sources") or []
+                    ],
+                }
+            )
+        return {
+            "id": str(conversation["id"]),
+            "messages": messages,
+            "created_at": conversation["createdAt"],
+            "updated_at": conversation["updatedAt"],
+            "expires_at": conversation["expiresAt"],
+        }
+    except (KeyError, TypeError):
+        raise UpstreamError("Chat Core returned an invalid response") from None
+
+
+def _chat_mutation_result(payload, field):
+    if not isinstance(payload, dict):
+        raise UpstreamError("Chat Core returned an invalid response")
+    for error in payload.get("errors") or []:
+        extensions = error.get("extensions") if isinstance(error, dict) else None
+        code = extensions.get("code") if isinstance(extensions, dict) else None
+        if code == "UNAUTHENTICATED":
+            raise UpstreamError("Chat authentication is required", code)
+        if code == "NOT_FOUND":
+            raise UpstreamError("Chat conversation was not found", code)
+        raise UpstreamError("Chat Core request failed")
+
+    result = (payload.get("data") or {}).get(field)
+    if not isinstance(result, dict):
+        raise UpstreamError("Chat Core returned an invalid response")
+    user_errors = result.get("userErrors") or []
+    if user_errors:
+        code = user_errors[0].get("code") if isinstance(user_errors[0], dict) else None
+        if code == "UNAUTHENTICATED":
+            raise UpstreamError("Chat authentication is required", code)
+        if code == "NOT_FOUND":
+            raise UpstreamError("Chat conversation was not found", code)
+        if code == "INVALID":
+            raise UpstreamError("Chat request was rejected", "INVALID_REQUEST")
+        raise UpstreamError("Chat Core request failed")
+    return _chat_conversation_from_core(result.get("conversation"))
+
+
+def create_chat_conversation(token=None, cookie_value=None):
+    query = """
+    mutation CreateChatConversation {
+      createChatConversation {
+        conversation {
+          id createdAt updatedAt expiresAt
+          messages { id role content createdAt sources { title url } }
+        }
+        userErrors { code message field }
+      }
+    }
+    """
+    payload = _graphql_request(
+        query,
+        {},
+        token,
+        extra_headers=_chat_core_headers(token, cookie_value),
+    )
+    return {"conversation": _chat_mutation_result(payload, "createChatConversation")}
+
+
+def record_chat_exchange(
+    conversation_id,
+    user_message,
+    assistant_message,
+    token=None,
+    cookie_value=None,
+    sources=None,
+):
+    query = """
+    mutation RecordChatExchange(
+      $conversationId: ID!
+      $userMessage: String!
+      $assistantMessage: String!
+      $sources: [ChatSourceInput!]
+    ) {
+      recordChatExchange(
+        conversationId: $conversationId
+        userMessage: $userMessage
+        assistantMessage: $assistantMessage
+        sources: $sources
+      ) {
+        conversation {
+          id createdAt updatedAt expiresAt
+          messages { id role content createdAt sources { title url } }
+        }
+        userErrors { code message field }
+      }
+    }
+    """
+    payload = _graphql_request(
+        query,
+        {
+            "conversationId": conversation_id,
+            "userMessage": user_message,
+            "assistantMessage": assistant_message,
+            "sources": sources if sources is not None else [],
+        },
+        token,
+        extra_headers=_chat_core_headers(token, cookie_value),
+    )
+    return {"conversation": _chat_mutation_result(payload, "recordChatExchange")}
 
 
 def get_product_detail(slug):
