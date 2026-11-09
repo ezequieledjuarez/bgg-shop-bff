@@ -60,6 +60,16 @@ respuestas de autenticación son `401` y los fallos al verificar la identidad
 en Core son `502`, siempre con errores sanitizados y `Cache-Control: no-store`.
 Una clave de operación por sí sola no autentica esta solicitud.
 
+### `POST /api/v1/auth/refresh`
+
+Uses the `refresh_token` cookie or an optional body token; a nonempty body token
+takes precedence. Core `401` means terminal token rejection and clears the
+cookie. Transport failures, Core `5xx`/other non-`200` responses, redirects, and
+invalid JSON or token shapes return a sanitized `502` while preserving the
+cookie. Successful responses rotate the cookie when Core supplies a valid new
+refresh token. Every refresh response uses `Cache-Control: no-store`; redirects
+are not followed.
+
 ### `GET /health`
 
 No requiere parámetros y responde `200` con:
@@ -77,6 +87,7 @@ Lista y filtra el catálogo paginado. Parámetros opcionales:
 | `page` | entero | `1` | positivo |
 | `page_size` | entero | `20` | positivo y como máximo `100` |
 | `search` | texto | — | entre 1 y 200 caracteres |
+| `publisher` | texto | — | nombre exacto de editorial, sensible a mayúsculas luego de recortar espacios; entre 1 y 250 caracteres |
 | `year_published` | entero | — | entre `0` y `9999` |
 | `min_players`, `max_players` | entero | — | entre `1` y `999` |
 | `category_id` | entero | — | mayor o igual que `1` |
@@ -136,6 +147,24 @@ sección siguiente.
 
 La implementación completa del alcance y sus limitaciones está en
 [`docs/CU-C02-FILTERING-CHANGES.md`](../docs/CU-C02-FILTERING-CHANGES.md).
+
+### `GET /api/v1/product-publishers`
+
+Devuelve la lista completa y no paginada de editoriales del catálogo público:
+
+```json
+[
+  { "publisher": "Kosmos", "product_count": 7 },
+  { "publisher": "Salt & Pepper Games", "product_count": 3 }
+]
+```
+
+`product_count` cuenta juegos distintos (`bggId`), no unidades de inventario;
+los conteos son globales y no cambian con filtros ni paginación. Se agrupan
+nombres luego de recortar espacios, se conservan variantes por mayúsculas y se
+excluyen valores vacíos. El endpoint no devuelve datos privados. Si Core falla
+o su respuesta no cumple el contrato, el BFF responde `502` sanitizado; no
+convierte el error en una lista vacía ni usa conteos obsoletos.
 
 ### `GET /api/v1/cart` y operaciones de artículos
 

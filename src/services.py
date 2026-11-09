@@ -52,6 +52,10 @@ def list_product_categories():
     return proxy.list_product_categories()
 
 
+def list_product_publishers():
+    return proxy.list_product_publishers()
+
+
 def list_available_coupons():
     return proxy.list_available_coupons()
 

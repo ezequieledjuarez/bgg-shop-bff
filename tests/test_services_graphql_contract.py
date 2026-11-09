@@ -25,7 +25,8 @@ def capture_post(expected_checks):
     expected_checks: list of callables(json_body)->None assertions
     """
 
-    def _inner(url, json=None, headers=None, timeout=None):
+    def _inner(url, json=None, headers=None, timeout=None, allow_redirects=None):
+        assert allow_redirects is False
         body = json or {}
         for check in expected_checks:
             check(body)
@@ -73,7 +74,8 @@ def test_apply_coupon_preview_user_errors_raises():
     def check(body):
         assert "query" in body and "applyCouponPreview" in body["query"]
 
-    def user_error_post(url, json=None, headers=None, timeout=None):
+    def user_error_post(url, json=None, headers=None, timeout=None, allow_redirects=None):
+        assert allow_redirects is False
         # Return a payload with userErrors
         return DummyResponse({
             "data": {"applyCouponPreview": {"valid": False, "discountAmount": 0.0, "newTotal": 100.0, "userErrors": [{"field": "code", "code": "INVALID_COUPON", "message": "Coupon invalid"}]}}
@@ -89,7 +91,8 @@ def test_apply_coupon_preview_user_errors_raises():
 
 def test_add_to_cart_http_error_raises():
     # Simulate network/request exception
-    def error_post(url, json=None, headers=None, timeout=None):
+    def error_post(url, json=None, headers=None, timeout=None, allow_redirects=None):
+        assert allow_redirects is False
         raise requests.RequestException("boom")
 
     with patch("src.proxy.requests.post", side_effect=error_post):

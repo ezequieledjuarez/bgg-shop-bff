@@ -5,11 +5,16 @@ from src.proxy import UpstreamError
 
 
 def _resp(data):
-    return type("R", (), {"json": lambda self: {"data": data}, "raise_for_status": lambda self: None})()
+    return type("R", (), {
+        "status_code": 200,
+        "json": lambda self: {"data": data},
+        "raise_for_status": lambda self: None,
+    })()
 
 
 def test_get_wishlist_and_add_remove_shape():
-    def fake_post_get(url, json=None, timeout=None, headers=None):
+    def fake_post_get(url, json=None, timeout=None, headers=None, allow_redirects=None):
+        assert allow_redirects is False
         body = json or {}
         assert "myWishlist" in body.get("query", "")
         return _resp({"myWishlist": [{"bggId": 7, "name": "WGame", "releaseYear": 2019, "minPlayers": 1, "maxPlayers": 6, "playingTimeMinutes": 30, "minAge": 8, "weight": 1.0, "category": "Family", "price": 25.0, "quantity": 2, "publisher": "P", "imageUrl": "u"}]})
@@ -19,7 +24,8 @@ def test_get_wishlist_and_add_remove_shape():
         assert isinstance(res, list)
         assert res[0]["bgg_id"] == 7
 
-    def fake_post_add(url, json=None, timeout=None, headers=None):
+    def fake_post_add(url, json=None, timeout=None, headers=None, allow_redirects=None):
+        assert allow_redirects is False
         body = json or {}
         assert "addToWishlist" in body.get("query", "")
         vars = body.get("variables") or {}
@@ -30,7 +36,8 @@ def test_get_wishlist_and_add_remove_shape():
         p = services.add_to_wishlist(99, token="T")
         assert p["bgg_id"] == 99
 
-    def fake_post_remove(url, json=None, timeout=None, headers=None):
+    def fake_post_remove(url, json=None, timeout=None, headers=None, allow_redirects=None):
+        assert allow_redirects is False
         body = json or {}
         assert "removeFromWishlist" in body.get("query", "")
         return _resp({"removeFromWishlist": {"bggId": 99, "name": "New", "releaseYear": 2022, "minPlayers": 1, "maxPlayers": 4, "playingTimeMinutes": 45, "minAge": 12, "weight": 1.5, "category": "Strategy", "price": 40.0, "quantity": 3, "publisher": "P", "imageUrl": "u"}})
@@ -41,7 +48,8 @@ def test_get_wishlist_and_add_remove_shape():
 
 
 def test_get_orders_and_order_detail_and_not_found():
-    def fake_post_orders(url, json=None, timeout=None, headers=None):
+    def fake_post_orders(url, json=None, timeout=None, headers=None, allow_redirects=None):
+        assert allow_redirects is False
         assert "myOrders" in (json or {}).get("query", "")
         return _resp({"myOrders": [{"id": "o1", "status": "CREATED", "total": 100.0, "currency": "USD", "shippingMode": "STANDARD", "createdAt": "2020-01-01", "lines": []}]})
 
@@ -49,7 +57,8 @@ def test_get_orders_and_order_detail_and_not_found():
         lst = services.get_orders(token="T")
         assert isinstance(lst, list) and lst[0]["id"] == "o1"
 
-    def fake_post_order(url, json=None, timeout=None, headers=None):
+    def fake_post_order(url, json=None, timeout=None, headers=None, allow_redirects=None):
+        assert allow_redirects is False
         body = json or {}
         vars = body.get("variables") or {}
         assert vars.get("id") == "o-123"
@@ -60,7 +69,8 @@ def test_get_orders_and_order_detail_and_not_found():
         assert o["id"] == "o-123"
 
     # simulate not found
-    def fake_post_order_none(url, json=None, timeout=None, headers=None):
+    def fake_post_order_none(url, json=None, timeout=None, headers=None, allow_redirects=None):
+        assert allow_redirects is False
         return _resp({"myOrder": None})
 
     with patch("src.proxy.requests.post", side_effect=fake_post_order_none):

@@ -103,6 +103,7 @@ def test_stock_limit_is_returned_as_conflict_warning():
 
 def test_cart_proxy_maps_core_cart_fields_and_uses_cookie_identifier():
     response = MagicMock()
+    response.status_code = 200
     response.json.return_value = {"data": {"cart": {
         "cartId": "opaque-id",
         "subtotal": 25.0,
@@ -122,6 +123,7 @@ def test_cart_proxy_maps_core_cart_fields_and_uses_cookie_identifier():
 
 def test_cart_mutation_maps_stock_user_errors_and_forwards_authorization():
     response = MagicMock()
+    response.status_code = 200
     response.json.return_value = {"data": {"addToCart": {
         "cart": {"cartId": "opaque-id", "subtotal": 25.0, "lines": []},
         "userErrors": [{
@@ -140,8 +142,43 @@ def test_cart_mutation_maps_stock_user_errors_and_forwards_authorization():
     }
 
 
+def test_cart_mutations_forward_guest_cart_and_bearer_without_operation_key():
+    mutations = [
+        (add_to_cart, "addToCart", (7, 2), "POST", {"bggId": 7, "quantity": 2}),
+        (update_cart_quantity, "updateCartQuantity", (7, 3), "PATCH", {"bggId": 7, "quantity": 3}),
+        (remove_from_cart, "removeFromCart", (7,), "DELETE", {"bggId": 7}),
+    ]
+
+    for mutation, field, prefix, method, expected_variables in mutations:
+        for token in (None, "Bearer test-token"):
+            cart_id = "guest-cart"
+            response = MagicMock()
+            response.status_code = 200
+            response.json.return_value = {"data": {field: {
+                "cart": {"cartId": cart_id, "subtotal": 0, "lines": []},
+                "userErrors": [],
+            }}}
+            with app.test_request_context(
+                "/api/v1/cart/items/7",
+                method=method,
+                headers={"X-Op-Key": "operation-key"},
+            ), patch("src.proxy.requests.post", return_value=response) as post:
+                result = mutation(*prefix, cart_id, token)
+
+            assert result["cart_id"] == cart_id
+            request = post.call_args.kwargs
+            assert request["json"]["variables"] == {
+                **expected_variables, "cartId": cart_id,
+            }
+            assert request["headers"] == (
+                {"Authorization": token} if token else {}
+            )
+            assert request["allow_redirects"] is False
+
+
 def test_update_and_remove_proxy_use_the_core_graphql_contract():
     response = MagicMock()
+    response.status_code = 200
     response.json.return_value = {"data": {"updateCartQuantity": {
         "cart": {"cartId": "opaque-id", "subtotal": 0, "lines": []},
         "userErrors": [],
@@ -212,6 +249,7 @@ def test_login_passes_guest_cart_id_and_clears_cookie_after_success():
 
 def test_login_proxy_includes_guest_cart_id_in_core_input():
     response = MagicMock()
+    response.status_code = 200
     response.json.return_value = {"data": {"login": {
         "user": {"id": "1", "email": "player@example.test", "firstName": "Test",
                  "lastName": "Player", "isActive": True},
