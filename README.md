@@ -51,6 +51,15 @@ La especificación completa del caso de uso, incluyendo ejemplos, mapeos y
 decisiones de seguridad, está en
 [`docs/CU-C01-AUTHENTICATION-CHANGES.md`](../docs/CU-C01-AUTHENTICATION-CHANGES.md).
 
+### `GET /api/v1/auth/me`
+
+Devuelve únicamente `is_staff` e `is_superuser`, consultados desde el estado
+actual de la cuenta en Core. Requiere un token `Bearer` de una cuenta activa;
+un comprador también recibe `200` con ambos indicadores en `false`. Las
+respuestas de autenticación son `401` y los fallos al verificar la identidad
+en Core son `502`, siempre con errores sanitizados y `Cache-Control: no-store`.
+Una clave de operación por sí sola no autentica esta solicitud.
+
 ### `GET /health`
 
 No requiere parámetros y responde `200` con:

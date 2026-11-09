@@ -39,6 +39,7 @@ from src.controllers.chatbot_conversations_controller import (
     delete_conversation as delete_chat_conversation_controller,
     get_conversation as get_chat_conversation_controller,
 )
+from src.controllers.auth_controller import current_user as auth_current_user_controller
 from src.controllers.reviews_controller import (
     admin_list_reviews as admin_list_reviews_controller,
     admin_moderate_review as admin_moderate_review_controller,
@@ -166,7 +167,10 @@ _opkey_before_request = app.before_request_funcs[None][-1]
 
 
 def _opkey_except_credit():
-    if request.path not in _CREDIT_PATHS and request.path != "/api/v1/auth/logout":
+    if request.path not in _CREDIT_PATHS and request.path not in (
+        "/api/v1/auth/logout",
+        "/api/v1/auth/me",
+    ):
         return _opkey_before_request()
 
 
@@ -254,6 +258,13 @@ def _handle_unexpected_exception(exc):
         return exc
     app.logger.error("Unexpected request error.")
     return jsonify({"error": "internal server error"}), 500
+
+
+@app.after_request
+def _no_store_current_user_response(response):
+    if request.path == "/api/v1/auth/me":
+        response.headers["Cache-Control"] = "no-store"
+    return response
 
 
 app.config["CART_COOKIE_NAME"] = os.getenv("CART_COOKIE_NAME", "cart_id")
@@ -523,6 +534,11 @@ def purchase_invoice(order_id):
 @app.route("/api/v1/auth/register", methods=["POST"])
 def register():
     return auth_request(register_account, 201)
+
+
+@app.route("/api/v1/auth/me", methods=["GET"])
+def auth_current_user():
+    return auth_current_user_controller(proxy_module.get_current_user_capabilities)
 
 
 @app.route("/api/v1/auth/login", methods=["POST"])

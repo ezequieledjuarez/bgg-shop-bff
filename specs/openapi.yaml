@@ -54,6 +54,70 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+  /api/v1/auth/me:
+    get:
+      tags:
+      - Authentication
+      summary: Read the current authenticated user's administrative flags
+      description: >-
+        Returns only the current active user's staff and superuser flags from
+        Core Query.me. The projection is a navigation hint, not authorization.
+        Requires bearer authentication; operation-key-only access is rejected.
+        Every response is non-cacheable.
+      operationId: getCurrentUserCapabilities
+      security:
+      - BearerAuth: []
+      responses:
+        '200':
+          description: Current user's role flags.
+          headers:
+            Cache-Control:
+              required: true
+              description: Role snapshots must not be cached.
+              schema:
+                type: string
+                enum: [no-store]
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CurrentUserCapabilities'
+              example:
+                is_staff: true
+                is_superuser: false
+        '401':
+          description: Missing, invalid, or inactive user identity.
+          headers:
+            Cache-Control:
+              required: true
+              description: Authentication results must not be cached.
+              schema:
+                type: string
+                enum: [no-store]
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthErrorResponse'
+              example:
+                errors:
+                - code: UNAUTHENTICATED
+                  message: Authentication is required.
+        '502':
+          description: Core identity could not be resolved; upstream details are omitted.
+          headers:
+            Cache-Control:
+              required: true
+              description: Identity resolution failures must not be cached.
+              schema:
+                type: string
+                enum: [no-store]
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthErrorResponse'
+              example:
+                errors:
+                - code: UPSTREAM_FAILURE
+                  message: The current user could not be verified.
   /api/v1/auth/register:
     post:
       tags:
@@ -3761,6 +3825,15 @@ components:
               message:
                 type: string
                 description: Sanitized public message without upstream or internal details.
+    CurrentUserCapabilities:
+      type: object
+      additionalProperties: false
+      required: [is_staff, is_superuser]
+      properties:
+        is_staff:
+          type: boolean
+        is_superuser:
+          type: boolean
     AuthUser:
       type: object
       required:

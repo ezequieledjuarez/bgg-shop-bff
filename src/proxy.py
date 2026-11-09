@@ -1214,6 +1214,46 @@ def check_admin(token, require_active=False):
     return me["isStaff"] or me["isSuperuser"]
 
 
+def get_current_user_capabilities(token):
+    query = """
+    query CurrentUserCapabilities {
+      me { isActive isStaff isSuperuser }
+    }
+    """
+    payload = _graphql_request(query, {}, token)
+    if not isinstance(payload, dict):
+        raise UpstreamError("GraphQL upstream returned an invalid identity")
+    errors = payload.get("errors", [])
+    if not isinstance(errors, list):
+        raise UpstreamError("GraphQL upstream returned an invalid identity")
+    if errors:
+        if any(
+            isinstance(error, dict)
+            and isinstance(error.get("extensions"), dict)
+            and error["extensions"].get("code") == "UNAUTHENTICATED"
+            for error in errors
+        ):
+            raise UpstreamError("Authentication is required.", "UNAUTHENTICATED", user_error=True)
+        raise UpstreamError("GraphQL upstream returned an invalid identity")
+    data = payload.get("data")
+    if not isinstance(data, dict) or "me" not in data:
+        raise UpstreamError("GraphQL upstream returned an invalid identity")
+    me = data["me"]
+    if me is None:
+        raise UpstreamError("Authentication is required.", "UNAUTHENTICATED", user_error=True)
+    if not isinstance(me, dict) or any(
+        type(me.get(field)) is not bool
+        for field in ("isActive", "isStaff", "isSuperuser")
+    ):
+        raise UpstreamError("GraphQL upstream returned an invalid identity")
+    if not me["isActive"]:
+        raise UpstreamError("Authentication is required.", "UNAUTHENTICATED", user_error=True)
+    return {
+        "is_staff": me["isStaff"],
+        "is_superuser": me["isSuperuser"],
+    }
+
+
 def _review_moderation_error(payload):
     for error in payload.get("errors") or []:
         extensions = error.get("extensions") if isinstance(error, dict) else None

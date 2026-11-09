@@ -1,7 +1,12 @@
+import logging
+
 from flask import jsonify, request
 
 from ..dtos import AuthRequest, AuthResponse
 from ..proxy import UpstreamError
+
+
+logger = logging.getLogger(__name__)
 
 
 def auth_request(operation, success_status):
@@ -32,3 +37,33 @@ def auth_request(operation, success_status):
                 }],
             }), 409
         return jsonify({"error": "upstream GraphQL request failed"}), 502
+
+
+def current_user(operation):
+    authorization = request.headers.get("Authorization", "")
+    parts = authorization.split()
+    if len(parts) != 2 or parts[0].lower() != "bearer":
+        return jsonify({
+            "errors": [{
+                "code": "UNAUTHENTICATED",
+                "message": "Authentication is required.",
+            }],
+        }), 401
+    try:
+        result = operation(authorization)
+        return jsonify(result), 200
+    except UpstreamError as exc:
+        if exc.code == "UNAUTHENTICATED":
+            return jsonify({
+                "errors": [{
+                    "code": "UNAUTHENTICATED",
+                    "message": "Authentication is required.",
+                }],
+            }), 401
+        logger.error("Current-user identity verification failed.")
+        return jsonify({
+            "errors": [{
+                "code": "UPSTREAM_FAILURE",
+                "message": "The current user could not be verified.",
+            }],
+        }), 502
