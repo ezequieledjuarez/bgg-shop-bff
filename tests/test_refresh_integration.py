@@ -1,3 +1,4 @@
+import requests
 from unittest.mock import MagicMock, patch
 
 from app import app
@@ -26,13 +27,16 @@ def test_refresh_http_route_rejects_missing_token_without_core():
 
 def test_refresh_transport_failure_does_not_log_private_details(capsys, caplog):
     secret = 'synthetic-private-refresh-error'
-    with patch('app._requests.post', side_effect=RuntimeError(secret)), \
+    with patch('app._requests.post', side_effect=requests.exceptions.ConnectionError(secret)), \
             patch('app._append_incoming_log'), patch('app._opkey_before_request', return_value=None):
-        response = app.test_client().post('/api/v1/auth/refresh', json={'refresh_token': 'synthetic-refresh-token'})
+        client = app.test_client()
+        client.set_cookie('refresh_token', 'synthetic-refresh-token')
+        response = client.post('/api/v1/auth/refresh')
     captured = capsys.readouterr()
     assert response.status_code == 502
     assert response.get_json() == {'detail': 'refresh upstream error'}
-    assert 'refresh_token=' in response.headers['Set-Cookie']
+    assert 'Max-Age=0' not in response.headers.get('Set-Cookie', '')
+    assert response.headers['Cache-Control'] == 'no-store'
     assert secret not in captured.out + captured.err + caplog.text + response.get_data(as_text=True)
 
 

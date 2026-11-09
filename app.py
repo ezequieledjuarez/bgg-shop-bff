@@ -95,7 +95,10 @@ from src.controllers.op_sessions_controller import list_sessions, manage_session
 from src import proxy as proxy_module
 from src import opkey_middleware
 from src.chatbot import service as chatbot_answer_service
-from src.controllers.products_controller import product_categories as product_categories_controller
+from src.controllers.products_controller import (
+    product_categories as product_categories_controller,
+    product_publishers as product_publishers_controller,
+)
 from src.controllers.admin_audit_controller import admin_list_audit as admin_list_audit_controller
 from src.controllers.admin_sales_controller import (
     get_admin_sales_categories as admin_sales_categories_controller,
@@ -105,7 +108,7 @@ from src.controllers.admin_users_controller import (
     list_users as admin_users_list_controller,
     update_user_privilege as admin_user_privilege_update_controller,
 )
-from src.services import list_available_coupons, list_product_categories
+from src.services import list_available_coupons, list_product_categories, list_product_publishers
 from src import catalog_cache
 from src.chatbot import rate_limit as chatbot_rate_limit
 from flask import jsonify
@@ -300,6 +303,11 @@ def products():
 @app.route("/api/v1/product-categories", methods=["GET"])
 def product_categories():
     return product_categories_controller(list_product_categories)
+
+
+@app.route("/api/v1/product-publishers", methods=["GET"])
+def product_publishers():
+    return product_publishers_controller(list_product_publishers)
 
 
 @app.route("/api/v1/chat/conversations", methods=["POST"])
@@ -590,29 +598,50 @@ def refresh():
         # no refresh available
         resp = app.make_response(({"detail": "no refresh token"}, 401))
         resp.delete_cookie('refresh_token', path='/', secure=app.config.get('CART_COOKIE_SECURE', True), httponly=True, samesite='Strict')
+        resp.headers["Cache-Control"] = "no-store"
         return resp
     try:
         core_url = f"{core_base}/api/v1/auth/refresh"
-        r = _requests.post(core_url, json={"refresh_token": refresh_token}, timeout=5)
-        if r.status_code != 200:
-            resp = app.make_response(({"detail": "refresh failed"}, 401))
-            resp.delete_cookie('refresh_token', path='/', secure=app.config.get('CART_COOKIE_SECURE', True), httponly=True, samesite='Strict')
-            return resp
-        payload = r.json()
-        access = payload.get('access_token')
-        new_refresh = payload.get('refresh_token')
-        if not access:
-            resp = app.make_response(({"detail": "invalid upstream response"}, 502))
-            return resp
-        resp = app.make_response(({"access_token": access}, 200))
-        if new_refresh:
-            resp.set_cookie('refresh_token', new_refresh, path='/', secure=app.config.get('CART_COOKIE_SECURE', True), httponly=True, samesite='Strict')
-        return resp
-    except Exception:
-        app.logger.error("Refresh upstream request failed.")
+        r = _requests.post(core_url, json={"refresh_token": refresh_token}, timeout=5, allow_redirects=False)
+    except _requests.RequestException:
         resp = app.make_response(({"detail": "refresh upstream error"}, 502))
-        resp.delete_cookie('refresh_token', path='/', secure=app.config.get('CART_COOKIE_SECURE', True), httponly=True, samesite='Strict')
+        resp.headers["Cache-Control"] = "no-store"
         return resp
+
+    if r.status_code == 401:
+        resp = app.make_response(({"detail": "refresh failed"}, 401))
+        resp.delete_cookie('refresh_token', path='/', secure=app.config.get('CART_COOKIE_SECURE', True), httponly=True, samesite='Strict')
+        resp.headers["Cache-Control"] = "no-store"
+        return resp
+    if r.status_code != 200:
+        resp = app.make_response(({"detail": "refresh upstream error"}, 502))
+        resp.headers["Cache-Control"] = "no-store"
+        return resp
+
+    try:
+        payload = r.json()
+    except (ValueError, _requests.RequestException):
+        resp = app.make_response(({"detail": "invalid upstream response"}, 502))
+        resp.headers["Cache-Control"] = "no-store"
+        return resp
+
+    if not isinstance(payload, dict):
+        resp = app.make_response(({"detail": "invalid upstream response"}, 502))
+        resp.headers["Cache-Control"] = "no-store"
+        return resp
+    access = payload.get('access_token')
+    new_refresh = payload.get('refresh_token')
+    if not isinstance(access, str) or not access or (
+        new_refresh is not None and (not isinstance(new_refresh, str) or not new_refresh)
+    ):
+        resp = app.make_response(({"detail": "invalid upstream response"}, 502))
+        resp.headers["Cache-Control"] = "no-store"
+        return resp
+    resp = app.make_response(({"access_token": access}, 200))
+    if new_refresh is not None:
+        resp.set_cookie('refresh_token', new_refresh, path='/', secure=app.config.get('CART_COOKIE_SECURE', True), httponly=True, samesite='Strict')
+    resp.headers["Cache-Control"] = "no-store"
+    return resp
 
 
 # Admin management endpoints (minimal scaffolding)

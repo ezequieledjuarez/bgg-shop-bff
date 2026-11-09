@@ -223,6 +223,38 @@ def list_product_categories():
     return categories
 
 
+def list_product_publishers():
+    payload = _graphql_request(
+        "query ProductPublishers { productPublishers { publisher productCount } }",
+        {},
+    )
+    data = payload.get("data")
+    facets = data.get("productPublishers") if isinstance(data, dict) else None
+    if payload.get("errors") or not isinstance(facets, list):
+        raise UpstreamError("GraphQL upstream returned invalid publisher facets")
+
+    result = []
+    seen = set()
+    for facet in facets:
+        if not isinstance(facet, dict):
+            raise UpstreamError("GraphQL upstream returned invalid publisher facets")
+        publisher = facet.get("publisher")
+        product_count = facet.get("productCount")
+        if (
+            not isinstance(publisher, str)
+            or not publisher
+            or publisher != publisher.strip()
+            or len(publisher) > 250
+            or publisher in seen
+            or type(product_count) is not int
+            or product_count < 0
+        ):
+            raise UpstreamError("GraphQL upstream returned invalid publisher facets")
+        seen.add(publisher)
+        result.append({"publisher": publisher, "product_count": product_count})
+    return result
+
+
 def list_products(
     page=1,
     page_size=50,
@@ -235,6 +267,7 @@ def list_products(
     price_min=None,
     price_max=None,
     token=None,
+    publisher=None,
 ):
     page = _pagination_value(page, "page")
     page_size = _pagination_value(page_size, "page_size")
@@ -242,9 +275,14 @@ def list_products(
         raise ValueError("search must contain between 1 and 200 characters")
     if category_name is not None and not str(category_name).strip():
         raise ValueError("category_name must not be blank")
+    if publisher is not None:
+        publisher = str(publisher).strip()
+        if not publisher or len(publisher) > 250:
+            raise ValueError("publisher must contain 1 to 250 characters")
 
     filters = {
         "search": search,
+        "publisher": publisher,
         "yearPublished": _optional_integer(year_published, "year_published", 0, 9999),
         "minPlayers": _optional_integer(min_players, "min_players", 1, 999),
         "maxPlayers": _optional_integer(max_players, "max_players", 1, 999),
@@ -263,12 +301,12 @@ def list_products(
     # GraphQL query for product listing (always defined)
     query = """
     query Products(
-        $page: Int!, $pageSize: Int!, $search: String, $yearPublished: Int,
+        $page: Int!, $pageSize: Int!, $search: String, $publisher: String, $yearPublished: Int,
         $minPlayers: Int, $maxPlayers: Int, $categoryId: Int, $categoryName: String,
         $priceMin: Float, $priceMax: Float
     ) {
         products(
-            page: $page, pageSize: $pageSize, search: $search,
+            page: $page, pageSize: $pageSize, search: $search, publisher: $publisher,
             yearPublished: $yearPublished, minPlayers: $minPlayers,
             maxPlayers: $maxPlayers, categoryId: $categoryId, categoryName: $categoryName,
             priceMin: $priceMin, priceMax: $priceMax
@@ -817,7 +855,7 @@ def _cart_mutation(field, bgg_id, quantity, cart_id, token):
     variables = {"bggId": bgg_id, "cartId": cart_id}
     if quantity is not None:
         variables["quantity"] = quantity
-    payload = _graphql_request(query, variables, token, op_key=op_key)
+    payload = _graphql_request(query, variables, token)
     if payload.get("errors"):
         raise UpstreamError("GraphQL upstream returned errors")
     result = (payload.get("data") or {}).get(field)
@@ -1125,7 +1163,7 @@ def get_orders(token):
     query = f"""
     query MyOrders {{ myOrders {{ {_ORDER_FIELDS} }} }}
     """
-    payload = _graphql_request(query, {}, token, op_key=op_key)
+    payload = _graphql_request(query, {}, token)
     _raise_order_graphql_errors(payload)
     orders = (payload.get("data") or {}).get("myOrders")
     if not isinstance(orders, list):

@@ -315,6 +315,42 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+  /api/v1/product-publishers:
+    get:
+      tags:
+      - Products
+      summary: List public catalog publishers and distinct-game counts
+      description: >-
+        Returns the complete unpaginated publisher facet list from the public
+        catalog. Counts are global across search, category, other filters, and
+        pagination, and count distinct games rather than inventory units.
+        Publisher identity is the trimmed stored name; duplicate values after
+        trimming are grouped, case variants remain distinct, and spelling is
+        preserved. Blank publisher values are excluded. Public products with
+        zero inventory remain eligible when present in the catalog.
+      operationId: listProductPublishers
+      responses:
+        '200':
+          description: Complete ordered publisher facet list; empty means no eligible publishers.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/ProductPublisherFacet'
+              example:
+              - publisher: Kosmos
+                product_count: 7
+              - publisher: Salt & Pepper Games
+                product_count: 3
+        '502':
+          description: Core is unavailable or returned invalid facet data.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+      security:
+      - {}
   /api/v1/chat/conversations:
     post:
       tags:
@@ -536,6 +572,17 @@ paths:
       - $ref: '#/components/parameters/MaxPlayers'
       - $ref: '#/components/parameters/CategoryId'
       - $ref: '#/components/parameters/CategoryName'
+      - name: publisher
+        in: query
+        required: false
+        description: >-
+          Exact publisher name. Matching is case-sensitive after trimming
+          surrounding whitespace and is combined with every other supplied
+          filter using AND semantics.
+        schema:
+          type: string
+          minLength: 1
+          maxLength: 250
       - $ref: '#/components/parameters/PriceMin'
       - $ref: '#/components/parameters/PriceMax'
       responses:
@@ -4794,6 +4841,22 @@ components:
           type: integer
           minimum: 0
           example: 1
+    ProductPublisherFacet:
+      type: object
+      additionalProperties: false
+      required:
+      - publisher
+      - product_count
+      properties:
+        publisher:
+          type: string
+          minLength: 1
+          maxLength: 250
+          description: Trimmed, case-sensitive publisher identity and display name.
+        product_count:
+          type: integer
+          minimum: 0
+          description: Count of distinct eligible public catalog games.
     CheckoutRequest:
       type: object
       additionalProperties: false

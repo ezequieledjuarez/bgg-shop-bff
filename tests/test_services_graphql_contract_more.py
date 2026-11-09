@@ -4,8 +4,12 @@ import src.services as services
 from src.proxy import UpstreamError
 
 
-def _make_resp(data):
-    return type("R", (), {"json": lambda self: {"data": data}, "raise_for_status": lambda self: None})()
+def _make_resp(data, status_code=200):
+    return type("R", (), {
+        "status_code": status_code,
+        "json": lambda self: {"data": data},
+        "raise_for_status": lambda self: None,
+    })()
 
 
 def test_list_products_shape_and_mapping():
@@ -26,7 +30,8 @@ def test_list_products_shape_and_mapping():
 
 
 def test_checkout_user_errors_raise_upstream_error():
-    def fake_post(url, json=None, timeout=None, headers=None):
+    def fake_post(url, json=None, timeout=None, headers=None, allow_redirects=None):
+        assert allow_redirects is False
         # Simulate GraphQL returning a checkout with userErrors
         return _make_resp({"checkout": {"order": None, "initPoint": None, "userErrors": [{"field": "address", "code": "INVALID_ADDRESS", "message": "Address invalid"}]}})
 

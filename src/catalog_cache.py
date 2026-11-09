@@ -39,7 +39,7 @@ def _normalize_inputs(inputs):
     normalized = {}
     for key, value in sorted(inputs.items()):
         if isinstance(value, str) and key in (
-            _INTEGER_INPUTS | _DECIMAL_INPUTS | {"search"}
+            _INTEGER_INPUTS | _DECIMAL_INPUTS | {"search", "publisher"}
         ):
             value = value.strip()
             if not value:

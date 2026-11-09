@@ -4,11 +4,16 @@ import src.services as services
 
 
 def _resp(data):
-    return type("R", (), {"json": lambda self: {"data": data}, "raise_for_status": lambda self: None})()
+    return type("R", (), {
+        "status_code": 200,
+        "json": lambda self: {"data": data},
+        "raise_for_status": lambda self: None,
+    })()
 
 
 def test_get_product_detail_sends_slug_and_maps():
-    def fake_post(url, json=None, timeout=None, headers=None):
+    def fake_post(url, json=None, timeout=None, headers=None, allow_redirects=None):
+        assert allow_redirects is False
         body = json or {}
         assert "productBySlug" in body.get("query", "")
         vars = body.get("variables") or {}
@@ -22,7 +27,8 @@ def test_get_product_detail_sends_slug_and_maps():
 
 def test_cart_add_update_remove_and_get_shapes_and_user_errors():
     # addToCart
-    def fake_post_add(url, json=None, timeout=None, headers=None):
+    def fake_post_add(url, json=None, timeout=None, headers=None, allow_redirects=None):
+        assert allow_redirects is False
         body = json or {}
         assert "addToCart" in body.get("query", "")
         vars = body.get("variables") or {}
@@ -35,7 +41,8 @@ def test_cart_add_update_remove_and_get_shapes_and_user_errors():
         assert res["cart_id"] == "c1"
 
     # updateCartQuantity
-    def fake_post_update(url, json=None, timeout=None, headers=None):
+    def fake_post_update(url, json=None, timeout=None, headers=None, allow_redirects=None):
+        assert allow_redirects is False
         body = json or {}
         assert "updateCartQuantity" in body.get("query", "")
         vars = body.get("variables") or {}
@@ -48,7 +55,8 @@ def test_cart_add_update_remove_and_get_shapes_and_user_errors():
         assert res["total"] == 200
 
     # removeFromCart
-    def fake_post_remove(url, json=None, timeout=None, headers=None):
+    def fake_post_remove(url, json=None, timeout=None, headers=None, allow_redirects=None):
+        assert allow_redirects is False
         body = json or {}
         assert "removeFromCart" in body.get("query", "")
         vars = body.get("variables") or {}
@@ -60,7 +68,8 @@ def test_cart_add_update_remove_and_get_shapes_and_user_errors():
         assert res["total"] == 0
 
     # simulate userErrors on addToCart -> warnings present
-    def fake_post_add_errors(url, json=None, timeout=None, headers=None):
+    def fake_post_add_errors(url, json=None, timeout=None, headers=None, allow_redirects=None):
+        assert allow_redirects is False
         return _resp({"addToCart": {"cart": {"cartId": "c1", "subtotal": 100, "lines": []}, "userErrors": [{"field": "quantity", "code": "OUT_OF_STOCK", "message": "Not enough stock"}]}})
 
     with patch("src.proxy.requests.post", side_effect=fake_post_add_errors):
