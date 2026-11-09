@@ -55,6 +55,24 @@ _UNCLEAR_PATTERNS = (
     re.compile(r"\b(?:contame|cuentame|decime|dime|hablame)\s+(?:mas\s+)?sobre\s+(?:eso|esto)\b"),
     re.compile(r"\b(?:que hay de|mas sobre|y despues|que sigue)\b"),
 )
+_SPANISH_GREETING = re.compile(
+    r"^[\s¡!¿?.,;:]*"
+    r"(?:"
+    r"(?:hola(?:[\s,;:!¡¿?]+(?:buenos\s+dias|buenas\s+(?:tardes|noches)))?)"
+    r"|buenos\s+dias|buenas\s+(?:tardes|noches)"
+    r")"
+    r"[\s¡!¿?.,;:]*$",
+    re.IGNORECASE,
+)
+_ENGLISH_GREETING = re.compile(
+    r"^[\s¡!¿?.,;:]*"
+    r"(?:"
+    r"(?:hi|hello)(?:[\s,;:!¡¿?]+good\s+(?:morning|afternoon|evening))?"
+    r"|good\s+(?:morning|afternoon|evening)"
+    r")"
+    r"[\s¡!¿?.,;:]*$",
+    re.IGNORECASE,
+)
 
 
 def normalized_message(message):
@@ -67,6 +85,10 @@ def normalized_message(message):
 
 def message_language(message):
     text = normalized_message(message)
+    if _SPANISH_GREETING.fullmatch(text):
+        return "es"
+    if _ENGLISH_GREETING.fullmatch(text):
+        return "en"
     # English questions can contain Spanish catalog category names.
     if re.match(r"\s*(?:what|which|how|when|where|why|can|could|tell|recommend|suggest)\b", text):
         return "en"
@@ -111,6 +133,8 @@ def classify_message(message):
         return "out_of_scope"
     if has_shop_topic:
         return "in_scope"
+    if _SPANISH_GREETING.fullmatch(message) or _ENGLISH_GREETING.fullmatch(message):
+        return "greeting"
     if any(pattern.search(message) for pattern in _UNCLEAR_PATTERNS):
         return "unclear"
     return "out_of_scope"
@@ -135,6 +159,9 @@ def reply_for_classification(classification, message=""):
                 "¿Podrías aclarar qué quieres saber sobre la tienda o sus productos? "
                 "Por favor, haz una pregunta relacionada con la tienda."
             ),
+            "greeting": (
+                "Hola, soy Meeple, tu asistente. ¿En qué puedo ayudarte?"
+            ),
             "fallback": (
                 "No puedo responder con confianza porque la información aprobada "
                 "de la tienda no está disponible ahora. Contacta al soporte de la tienda."
@@ -157,6 +184,7 @@ def reply_for_classification(classification, message=""):
             "Could you clarify what you’d like to know about the store or its "
             "products? Please ask a store-related question."
         ),
+        "greeting": "Hello, I'm Meeple, your assistant. How can I help?",
         "fallback": (
             "I can’t answer with confidence because approved store information "
             "is unavailable right now. Please contact store support."

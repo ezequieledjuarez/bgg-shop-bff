@@ -194,6 +194,40 @@ def test_in_scope_answer_and_sources_reach_core_and_existing_reply_shape(chat):
 
 
 @pytest.mark.parametrize(
+    ("message", "expected_answer"),
+    [
+        ("Hola buenos días", "Hola, soy Meeple, tu asistente. ¿En qué puedo ayudarte?"),
+        ("Hello!", "Hello, I'm Meeple, your assistant. How can I help?"),
+    ],
+)
+def test_pure_greeting_uses_deterministic_reply_without_provider_or_persistence(
+    chat, message, expected_answer
+):
+    response = chat.client.post(MESSAGE_ROUTE, json={"message": message})
+    body = _assert_reply_shape(response)
+
+    assert body["answer"] == expected_answer
+    assert body["sources"] == []
+    assert chat.provider_calls == []
+    assert chat.answer_calls == []
+    assert chat.core.calls == []
+    assert chat.events == ["limit"]
+
+
+def test_greeting_with_store_question_still_uses_grounded_service(chat):
+    message = "Hola, ¿qué medios de pago acepta la tienda?"
+    response = chat.client.post(MESSAGE_ROUTE, json={"message": message})
+    body = _assert_reply_shape(response)
+
+    assert body["answer"] == ANSWER
+    assert body["sources"] == _sources()
+    assert chat.answer_calls == [message]
+    assert len(chat.provider_calls) == 1
+    assert chat.events == ["limit", "provider", "answer", "record"]
+    assert chat.core.calls[0]["variables"]["userMessage"] == message
+
+
+@pytest.mark.parametrize(
     "payload",
     [
         None,

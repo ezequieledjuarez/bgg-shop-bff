@@ -9,10 +9,40 @@ import pytest
 import app as app_module
 from app import app
 from src import proxy as proxy_module
-from src.chatbot.guardrails import classify_message
+from src.chatbot.guardrails import classify_message, reply_for_classification
 
 
 CHAT_CONVERSATIONS = "/api/v1/chat/conversations"
+
+
+@pytest.mark.parametrize(
+    ("message", "classification"),
+    [
+        ("Hola buenos días", "greeting"),
+        ("¡HOLA, BUENAS TARDES!", "greeting"),
+        ("Buenas noches.", "greeting"),
+        ("Hello!", "greeting"),
+        ("Good morning.", "greeting"),
+        ("Hi, good evening!", "greeting"),
+        ("Hola, ¿qué medios de pago acepta la tienda?", "in_scope"),
+        ("Hola, dime el estado de mi pedido.", "protected"),
+        ("Hola, cuéntame un chiste.", "out_of_scope"),
+        ("Hola, ¿qué medios de pago y cuál es mi contraseña?", "mixed"),
+    ],
+)
+def test_greetings_are_full_matches_after_safety_classification(message, classification):
+    assert classify_message(message) == classification
+
+
+@pytest.mark.parametrize(
+    ("message", "expected"),
+    [
+        ("Hola buenos días", "Hola, soy Meeple, tu asistente. ¿En qué puedo ayudarte?"),
+        ("Hello!", "Hello, I'm Meeple, your assistant. How can I help?"),
+    ],
+)
+def test_greeting_reply_uses_the_matching_language(message, expected):
+    assert reply_for_classification("greeting", message) == expected
 
 
 @pytest.fixture
