@@ -2,9 +2,11 @@ import hashlib
 import hmac
 import json
 import os
+import threading
 import uuid
 import requests as _requests
 from datetime import datetime
+from pathlib import Path
 
 from flask import Flask, request
 from flask_cors import CORS
@@ -28,6 +30,14 @@ from src.controllers import (
     add_wishlist_item,
     list_wishlist,
     remove_wishlist_item,
+)
+from src.controllers.chatbot_controller import (
+    create_conversation as create_chat_conversation_controller,
+    send_message as send_chat_message_controller,
+)
+from src.controllers.chatbot_conversations_controller import (
+    delete_conversation as delete_chat_conversation_controller,
+    get_conversation as get_chat_conversation_controller,
 )
 from src.controllers.reviews_controller import (
     admin_list_reviews as admin_list_reviews_controller,
@@ -54,6 +64,8 @@ from src.services import (
     add_to_wishlist,
     get_wishlist,
     remove_from_wishlist,
+    create_chat_conversation,
+    record_chat_exchange,
 )
 from src.controllers import (
     admin_list_products,
@@ -81,6 +93,7 @@ from src.controllers.credit_controller import get_credit, redeem_gift_card, chec
 from src.controllers.op_sessions_controller import list_sessions, manage_session
 from src import proxy as proxy_module
 from src import opkey_middleware
+from src.chatbot import service as chatbot_answer_service
 from src.controllers.products_controller import product_categories as product_categories_controller
 from src.controllers.admin_audit_controller import admin_list_audit as admin_list_audit_controller
 from src.controllers.admin_sales_controller import (
@@ -93,10 +106,35 @@ from src.controllers.admin_users_controller import (
 )
 from src.services import list_available_coupons, list_product_categories
 from src import catalog_cache
+from src.chatbot import rate_limit as chatbot_rate_limit
 from flask import jsonify
 
 app = Flask(__name__)
 _MAX_CATALOG_EVENT_BODY_BYTES = 1024
+_chatbot_answer_service = None
+_chatbot_answer_service_lock = threading.Lock()
+
+
+def _get_chatbot_answer_service():
+    global _chatbot_answer_service
+    if _chatbot_answer_service is None:
+        with _chatbot_answer_service_lock:
+            if _chatbot_answer_service is None:
+                cache_directory = os.getenv("CHAT_CHROMA_DIR") or str(
+                    Path.home()
+                    / ".cache"
+                    / "bgg-shop-bff"
+                    / "approved-faq-chroma"
+                )
+                _chatbot_answer_service = (
+                    chatbot_answer_service.create_local_chatbot_service(
+                        Path(__file__).resolve().parent / "knowledge",
+                        persist_directory=cache_directory,
+                    )
+                )
+    return _chatbot_answer_service
+
+
 allowed_origins = ("http://localhost:3000", "http://127.0.0.1:3000")
 def _dynamic_allow_headers(environ):
     # Echo requested headers if present; fallback to common headers
@@ -229,6 +267,8 @@ development = (
 app.config["CART_COOKIE_SECURE"] = (
     _configured_bool(secure_setting) if secure_setting is not None else not development
 )
+app.config["CHAT_SESSION_COOKIE_SECURE"] = not development
+app._chat_rate_limiter = chatbot_rate_limit.check_request_limit
 
 
 @app.route("/health", methods=["GET"])
@@ -249,6 +289,44 @@ def products():
 @app.route("/api/v1/product-categories", methods=["GET"])
 def product_categories():
     return product_categories_controller(list_product_categories)
+
+
+@app.route("/api/v1/chat/conversations", methods=["POST"])
+def chat_create_conversation():
+    return create_chat_conversation_controller(
+        create_chat_conversation,
+        app._chat_rate_limiter,
+        app.config["CHAT_SESSION_COOKIE_SECURE"],
+    )
+
+
+@app.route("/api/v1/chat/conversations/<conversation_id>", methods=["GET"])
+def chat_get_conversation(conversation_id):
+    return get_chat_conversation_controller(
+        conversation_id,
+        app._chat_rate_limiter,
+    )
+
+
+@app.route("/api/v1/chat/conversations/<conversation_id>", methods=["DELETE"])
+def chat_delete_conversation(conversation_id):
+    return delete_chat_conversation_controller(
+        conversation_id,
+        app._chat_rate_limiter,
+    )
+
+
+@app.route(
+    "/api/v1/chat/conversations/<conversation_id>/messages",
+    methods=["POST"],
+)
+def chat_send_message(conversation_id):
+    return send_chat_message_controller(
+        conversation_id,
+        record_chat_exchange,
+        app._chat_rate_limiter,
+        _get_chatbot_answer_service,
+    )
 
 
 @app.route("/api/v1/coupons", methods=["GET"])

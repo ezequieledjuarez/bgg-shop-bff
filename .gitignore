@@ -43,6 +43,7 @@ coverage.xml
 # Docker & Containers (Podman / Local)
 # ==========================================
 .docker/
+.local/
 docker-compose.override.yml
 podman-compose.override.yml
 

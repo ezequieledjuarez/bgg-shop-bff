@@ -7,11 +7,19 @@
 
 ## 📌 Descripción General
 
-**`bgg-shop-bff`** es la capa de **orquestación, transformación de datos y API Gateway** de la plataforma e-commerce de juegos de mesa. 
+**`bgg-shop-bff`** es la capa de **orquestación, transformación de datos y API Gateway** de la plataforma e-commerce de juegos de mesa.
 
-Desarrollado con **Flask**, actúa como la API REST del catálogo para el
-cliente web (`bgg-shop-front`). Abstrae la API GraphQL del Core
-(`bgg-shop-core`) y adapta su respuesta a un contrato REST. La Home del Frontend consume este servicio para el catálogo y sus filtros.
+Desarrollado con **Flask**, actúa como la API REST del cliente web
+(`bgg-shop-frontend`) para catálogo y operaciones de cuenta/compra. El
+navegador consume REST; el BFF coordina esas solicitudes con GraphQL en el
+Core (`bgg-shop-core`) y adapta las respuestas al contrato REST.
+
+El contrato REST canónico es [`specs/openapi.yaml`](specs/openapi.yaml). El
+esquema GraphQL del Core está en
+[`../bgg-shop-core/specs/schema.graphql`](../bgg-shop-core/specs/schema.graphql).
+Algunas operaciones documentadas, en particular las del chatbot, siguen
+marcadas como planificadas; el contrato no acredita por sí solo que estén
+implementadas.
 
 ---
 
@@ -19,14 +27,12 @@ cliente web (`bgg-shop-front`). Abstrae la API GraphQL del Core
 
 El BFF es el límite REST entre el cliente y el Core:
 
-[ bgg-shop-front ]  ──(REST / JSON)──>  [ bgg-shop-bff ]  ──(GraphQL)──>  [ bgg-shop-core ]
-(React / Vite)                         (Flask Gateway)                   (Django / Saleor)
-│
-┌───────────┴───────────┐
-▼                       ▼
-[ Pandas Analytics ]    [ Health & Proxy ]
+Frontend React/Vite ── REST/JSON ──> BFF Flask ── GraphQL ──> Core Django/Graphene
+                                      │                       ├── PostgreSQL
+                                      │                       └── Redis/Celery
+                                      └── Redis (rate limit del chatbot)
 
-* **Contrato REST:** Expone únicamente las rutas descritas abajo.
+* **Contrato REST:** El inventario canónico está en `specs/openapi.yaml`; este README resume operaciones seleccionadas.
 * **Adaptación:** Traduce los nombres camelCase de GraphQL a snake_case en la
   respuesta REST de productos.
 * **Aislamiento:** El navegador no necesita conocer la URL ni el esquema
@@ -100,9 +106,8 @@ Respuesta `200`:
 ```
 
 Los valores reales dependen de `product_boardgame`. Una paginación inválida
-responde `400` con `{"error": "..."}`. Si el Core falla, devuelve errores
-GraphQL o entrega un payload inválido, responde `502` con `error` y, cuando
-corresponde, `detail`.
+responde `400` con `{"error": "..."}`. Si el Core falla o entrega un payload
+inválido, responde `502`; no dependas de detalles internos del upstream.
 
 ### Esquema de producto y paginación
 
@@ -219,6 +224,44 @@ Las respuestas de validación usan `400`, la falta de autenticación `401`, un
 rol no autorizado `403` y los errores no reconocidos del Core se exponen como
 `502` genérico sin detalles internos.
 
+### Chatbot CU-C07 (en progreso)
+
+El BFF implementa actualmente dos rutas:
+
+| Método | Ruta | Estado observado en el código |
+| --- | --- | --- |
+| `POST` | `/api/v1/chat/conversations` | Crea una conversación asociada a un token de usuario o a una sesión anónima. |
+| `POST` | `/api/v1/chat/conversations/{conversation_id}/messages` | Valida mensajes de hasta 2.000 caracteres, aplica guardrails y registra en Core los mensajes aceptados. |
+
+Estado y límites comprobados de Feature 013:
+
+- La generación de respuestas usa OpenRouter (`OPENROUTER_API_KEY` y
+  `OPENROUTER_MODEL`) cuando está configurado; ante falta de configuración,
+  error de transporte/HTTP o respuesta inválida, recurre a Ollama local
+  (`deepseek-r1:8b`). Los embeddings permanecen en Ollama. Las pruebas no leen
+  `.env` ni llaman al servicio externo: simulan la respuesta HTTP con valores
+  sintéticos. La selección enfocada de proveedor, RAG e integración pasó **51
+  pruebas, 12 warnings**, también confirmadas por revisión independiente y
+  spot-check local. No se validaron credenciales reales contra OpenRouter.
+- La selección BFF de guardrails, privacidad, RAG, catálogo y conversaciones pasó **69 pruebas, 0 fallos, 99 warnings**. La selección de integración/guardrails/privacidad pasó **64 pruebas, 0 fallos, 87 warnings**. Los tests RAG usan fakes deterministas; no son aceptación de Chroma local.
+- LangChain y ChromaDB siguen siendo requisitos aprobados. En el entorno Python local comprobado, el import probe no pudo importar `langchain`; no instales dependencias ni contactes registries como parte de esta guía.
+- La suite de contratos BFF reportó **7 aprobadas y 9 fallidas**, en pruebas existentes de producto/carrito/cupón/checkout/wishlist/pedidos. No se conoce causa o baseline; no se atribuyen esos fallos al chatbot ni se consideran corregidos.
+- La prueba de navegador determinista pasó **7 casos**, pero intercepta `/api/v1/**` con mocks. No demuestra integración BFF/Core, enforcement de ownership ni expiración de la base de datos.
+- El cierre de aceptación completa sigue pendiente. Los comandos exactos, evidencia de Core, fallos y limitaciones están en [`../specs/013-add-chatbot/quickstart.md`](../specs/013-add-chatbot/quickstart.md).
+
+### Comandos locales enfocados
+
+Ejecuta estos comandos desde la raíz del repositorio y solo en el entorno local de pruebas:
+
+```bash
+cd bgg-shop-bff && PYTHONPATH=. pytest -q tests/test_chatbot_service_integration.py tests/test_chatbot_rag.py tests/test_chatbot_guardrails.py tests/test_chatbot_privacy.py
+cd bgg-shop-bff && PYTHONPATH=. pytest -q tests/test_chatbot_guardrails.py tests/test_chatbot_privacy.py tests/test_chatbot_rag.py tests/test_chatbot_catalog.py tests/test_chatbot_conversations.py
+```
+
+Resultados observados: **64 passed, 0 failed, 87 warnings** en el primer comando y **69 passed, 0 failed, 99 warnings** en el segundo. No son pruebas de integración de servicios reales. No uses una base de datos no desechable, datos personales/de pedidos reales, CI, staging, producción o servicios remotos; no imprimas secretos ni ejecutes comandos de despliegue. Esta documentación no instruye cómo iniciar un proveedor o retención de datos.
+
+Trazabilidad: contrato/requisitos en [`../specs/013-add-chatbot/spec.md`](../specs/013-add-chatbot/spec.md); decisiones y límites en [`../specs/013-add-chatbot/plan.md`](../specs/013-add-chatbot/plan.md); tareas y evidencia en [`../specs/013-add-chatbot/tasks.md`](../specs/013-add-chatbot/tasks.md); implementación en [`src/controllers/chatbot_controller.py`](src/controllers/chatbot_controller.py), [`src/chatbot/guardrails.py`](src/chatbot/guardrails.py), [`src/chatbot/rag.py`](src/chatbot/rag.py) y [`src/chatbot/catalog.py`](src/chatbot/catalog.py); pruebas en `tests/test_chatbot_service_integration.py`, `tests/test_chatbot_guardrails.py`, `tests/test_chatbot_privacy.py`, `tests/test_chatbot_rag.py`, `tests/test_chatbot_catalog.py` y `tests/test_chatbot_conversations.py`.
+
 ---
 
 ## 🛠️ Tech Stack
@@ -232,11 +275,22 @@ rol no autorizado `403` y los errores no reconocidos del Core se exponen como
 
 ## 🚀 Inicio Rápido (Entorno Local con Podman)
 
-### Prerrequisitos
-* Podman y Podman Compose activos.
-* El servicio `saleor_api` (`bgg-shop-core`) corriendo en `http://api:8000/graphql/`.
+Para iniciar el BFF junto con sus dependencias, usa Podman y un proveedor
+Compose desde la raíz de este repositorio:
 
-### 1. Clonar el Repositorio
 ```bash
-git clone [https://github.com/tu-usuario/bgg-shop-bff.git](https://github.com/tu-usuario/bgg-shop-bff.git)
-cd bgg-shop-bff
+podman compose -f podman-compose.yaml up -d --build
+```
+
+El servicio queda publicado en `http://localhost:5000`; dentro de Compose,
+`SALEOR_GRAPHQL_URL` apunta a `http://api:8000/graphql/`. La interfaz Core
+GraphQL está en `http://localhost:8000/graphql/`. Para detener los servicios
+sin borrar sus volúmenes, ejecuta desde la raíz:
+
+```bash
+podman compose -f podman-compose.yaml down
+```
+
+El Compose usa valores predeterminados de desarrollo. No se requiere una
+credencial de Mercado Pago para iniciar el BFF; las operaciones de compra sí
+requieren la configuración de sandbox descrita en la sección de checkout.
