@@ -233,7 +233,7 @@ def test_register_proxy_adapts_rest_input_to_graphql_without_returning_password(
     with patch("src.proxy.requests.post", return_value=response) as post:
         result = register_account({
             "email": " player@example.test ",
-            "password": "safe-password",
+            "password": " Abcdef1! ",
             "first_name": "Test",
             "last_name": "Player",
         })
@@ -242,11 +242,54 @@ def test_register_proxy_adapts_rest_input_to_graphql_without_returning_password(
     variables = post.call_args.kwargs["json"]["variables"]
     assert variables["input"] == {
         "email": "player@example.test",
-        "password": "safe-password",
+        "password": " Abcdef1! ",
         "firstName": "Test",
         "lastName": "Player",
     }
     assert "password" not in result
+
+
+@pytest.mark.parametrize("password", [
+    "abcdef1!",
+    "ABCDEF1!",
+    "Abcdefg!",
+    "Abcdefg1",
+    "Abcdefg1 ",
+    "Abcdefg1\t",
+    "Abcdefg1\n",
+    "Ábcdef1!",
+    "ABCDEF1!ñ",
+    "Abcdefg!١",
+    "Abcdef1😀",
+])
+def test_register_proxy_rejects_missing_ascii_password_categories_before_upstream(password):
+    with patch("src.proxy.requests.post") as post, pytest.raises(ValueError):
+        register_account({
+            "email": "player@example.test",
+            "password": password,
+            "first_name": "Test",
+            "last_name": "Player",
+        })
+
+    post.assert_not_called()
+
+
+def test_register_password_composition_error_is_field_scoped():
+    with patch("requests.post") as post:
+        response = app.test_client().post(
+            "/api/v1/auth/register",
+            json={
+                "email": "player@example.test",
+                "password": "Abcdefg1",
+                "first_name": "Test",
+                "last_name": "Player",
+            },
+        )
+
+    assert response.status_code == 400
+    assert response.get_json()["errors"][0]["code"] == "INVALID"
+    assert response.get_json()["errors"][0]["field"] == ["password"]
+    post.assert_not_called()
 
 
 def test_login_proxy_requires_tokens():
@@ -266,7 +309,7 @@ def test_login_proxy_requires_tokens():
             }
         }
     }
-    with patch("src.proxy.requests.post", return_value=response):
+    with patch("src.proxy.requests.post", return_value=response) as post:
         try:
             authenticate_account({
                 "email": "player@example.test",
@@ -276,3 +319,4 @@ def test_login_proxy_requires_tokens():
             assert "no session" in str(exc)
         else:
             raise AssertionError("authenticate_account accepted a response without tokens")
+    assert post.call_args.kwargs["json"]["variables"]["input"]["password"] == "safe-password"

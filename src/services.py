@@ -10,6 +10,14 @@ def authenticate_account(payload):
     return proxy.authenticate_account(payload)
 
 
+def confirm_email_verification(token, caller):
+    return proxy.confirm_email_verification(token, caller)
+
+
+def resend_email_verification(email, caller):
+    return proxy.resend_email_verification(email, caller)
+
+
 def create_chat_conversation(token=None, cookie_value=None):
     return proxy.create_chat_conversation(token, cookie_value)
 

@@ -1,9 +1,11 @@
 import json
 import re
 import os
+import string
 import uuid
 import hashlib
 import hmac
+import ipaddress
 import time
 from datetime import datetime
 from urllib.parse import urlsplit, urlunsplit
@@ -28,6 +30,12 @@ class UpstreamError(Exception):
         self.user_error = user_error
 
 
+class AuthInputError(ValueError):
+    def __init__(self, message, field):
+        super().__init__(message)
+        self.field = field
+
+
 class ChatAssertionConfigurationError(Exception):
     pass
 
@@ -39,6 +47,31 @@ def _required_text(payload, name, minimum=1, maximum=254):
     value = value.strip()
     if len(value) < minimum or len(value) > maximum:
         raise ValueError(f"{name} has an invalid length")
+    return value
+
+
+def has_required_registration_password_composition(password):
+    if not isinstance(password, str):
+        return False
+    return (
+        any("A" <= character <= "Z" for character in password)
+        and any("a" <= character <= "z" for character in password)
+        and any("0" <= character <= "9" for character in password)
+        and any(character in string.punctuation for character in password)
+    )
+
+
+def _required_password(payload, minimum=1, maximum=128, registration=False):
+    value = payload.get("password")
+    if not isinstance(value, str) or not value:
+        raise AuthInputError("password is required", "password")
+    if len(value) < minimum or len(value) > maximum:
+        raise AuthInputError("password has an invalid length", "password")
+    if registration and not has_required_registration_password_composition(value):
+        raise AuthInputError(
+            "Password must include an ASCII uppercase letter, lowercase letter, digit, and printable punctuation symbol.",
+            "password",
+        )
     return value
 
 
@@ -73,6 +106,8 @@ def _auth_result(payload, field):
         code = errors[0].get("code")
         if code in ("DUPLICATE_EMAIL", "EMAIL_EXISTS", "UNIQUE"):
             raise UpstreamError("The email is already registered", "EMAIL_EXISTS")
+        if code == "EMAIL_NOT_VERIFIED":
+            raise UpstreamError("Email is not verified", "EMAIL_NOT_VERIFIED")
         if code in ("INVALID_CREDENTIALS", "INVALID"):
             raise UpstreamError("Invalid credentials", "INVALID_CREDENTIALS")
         raise UpstreamError("GraphQL authentication failed")
@@ -88,6 +123,13 @@ def _auth_result(payload, field):
             "is_active": user["isActive"],
         },
     }
+    verification = result.get("verification")
+    if verification is not None:
+        response["verification"] = {
+            "state": verification.get("state"),
+            "delivery_status": verification.get("deliveryStatus"),
+            "message": verification.get("message"),
+        }
     tokens = result.get("tokens")
     if tokens is not None:
         response["session"] = {
@@ -106,7 +148,7 @@ def _auth_result(payload, field):
 
 def register_account(payload):
     email = _required_text(payload, "email").lower()
-    password = _required_text(payload, "password", 8, 128)
+    password = _required_password(payload, 8, 128, registration=True)
     first_name = _required_text(payload, "first_name", 1, 150)
     last_name = _required_text(payload, "last_name", 1, 150)
     if "@" not in email:
@@ -115,7 +157,7 @@ def register_account(payload):
     mutation Register($input: RegisterInput!) {
       register(input: $input) {
         user { id email firstName lastName isActive }
-        tokens { token refreshToken csrfToken }
+        verification { state deliveryStatus message }
         errors { field code message }
       }
     }
@@ -127,7 +169,7 @@ def register_account(payload):
 
 def authenticate_account(payload):
     email = _required_text(payload, "email").lower()
-    password = _required_text(payload, "password", 1, 128)
+    password = _required_password(payload, 1, 128)
     if "@" not in email:
         raise ValueError("email must be valid")
     query = """
@@ -146,6 +188,110 @@ def authenticate_account(payload):
     if "session" not in result:
         raise UpstreamError("GraphQL login returned no session")
     return result
+
+
+class VerificationError(UpstreamError):
+    def __init__(self, message, code, retry_after=None):
+        super().__init__(message, code)
+        self.retry_after = retry_after
+
+
+VERIFICATION_TOKEN_PATTERN = re.compile(r"\A[A-Za-z0-9_-]{43}\Z")
+_CALLER_PREFIX = "email-verification:caller:v1:"
+
+
+def verification_caller(remote_addr):
+    """Derive the Core caller identity from the direct peer only, never from forwarded headers."""
+    try:
+        address = ipaddress.ip_address(remote_addr)
+    except ValueError:
+        raise VerificationError("Caller could not be identified", "VERIFICATION_UNAVAILABLE") from None
+    return hashlib.sha256((_CALLER_PREFIX + str(address)).encode("ascii")).hexdigest()
+
+
+def _verification_call(query, variables, field, caller):
+    secret = os.getenv("OPKEY_INTERNAL_SECRET", "")
+    if len(secret.encode("utf-8")) < 32:
+        logger.error("Email verification trust configuration is unavailable")
+        raise VerificationError("Verification is unavailable", "VERIFICATION_UNAVAILABLE")
+    request_id = str(uuid.uuid4())
+    try:
+        response = requests.post(
+            os.getenv("SALEOR_GRAPHQL_URL", DEFAULT_GRAPHQL_URL),
+            json={"query": query, "variables": variables},
+            headers={"X-Internal-Secret": secret, "X-Verification-Caller": caller},
+            timeout=10,
+            allow_redirects=False,
+        )
+        if response.status_code != 200:
+            raise VerificationError("Verification upstream failed", "UPSTREAM_FAILURE")
+        payload = response.json()
+    except (requests.RequestException, ValueError):
+        logger.error("Email verification upstream request failed (request_id=%s)", request_id)
+        raise VerificationError("Verification upstream failed", "UPSTREAM_FAILURE") from None
+    result = (payload.get("data") if isinstance(payload, dict) and not payload.get("errors") else None)
+    result = result.get(field) if isinstance(result, dict) else None
+    if not isinstance(result, dict) or not isinstance(result.get("errors"), list):
+        logger.error("Email verification upstream returned an invalid payload (request_id=%s)", request_id)
+        raise VerificationError("Verification upstream failed", "UPSTREAM_FAILURE")
+    return result
+
+
+def _raise_verification_errors(result):
+    errors = result["errors"]
+    if not errors:
+        return
+    first = errors[0] if isinstance(errors[0], dict) else {}
+    code = first.get("code")
+    if code == "RATE_LIMITED":
+        retry = first.get("retryAfterSeconds")
+        if type(retry) is not int or retry < 1:
+            raise VerificationError("Verification upstream failed", "UPSTREAM_FAILURE")
+        raise VerificationError("Too many attempts", "RATE_LIMITED", retry)
+    if code in ("INVALID_VERIFICATION_TOKEN", "INVALID"):
+        raise VerificationError("Invalid verification request", code)
+    if code in ("VERIFICATION_UNAVAILABLE", "FORBIDDEN"):
+        raise VerificationError("Verification is unavailable", "VERIFICATION_UNAVAILABLE")
+    raise VerificationError("Verification upstream failed", "UPSTREAM_FAILURE")
+
+
+def confirm_email_verification(token, caller):
+    # Invalid requests still reach the authoritative caller quota. Send a fixed
+    # unusable String, not arbitrary JSON or an unbounded attacker-controlled value.
+    if not isinstance(token, str) or not VERIFICATION_TOKEN_PATTERN.fullmatch(token):
+        token = ""
+    query = """
+    mutation ConfirmEmailVerification($input: ConfirmEmailVerificationInput!) {
+      confirmEmailVerification(input: $input) {
+        verified
+        message
+        errors { code retryAfterSeconds }
+      }
+    }
+    """
+    result = _verification_call(query, {"input": {"token": token}}, "confirmEmailVerification", caller)
+    _raise_verification_errors(result)
+    if result.get("verified") is not True or not isinstance(result.get("message"), str):
+        raise VerificationError("Verification upstream failed", "UPSTREAM_FAILURE")
+    return {"verified": True, "message": result["message"]}
+
+
+def resend_email_verification(email, caller):
+    if not isinstance(email, str) or not email.strip() or len(email.strip()) > 254 or "@" not in email:
+        raise VerificationError("Invalid verification request", "INVALID")
+    query = """
+    mutation ResendEmailVerification($input: ResendEmailVerificationInput!) {
+      resendEmailVerification(input: $input) {
+        message
+        errors { code retryAfterSeconds }
+      }
+    }
+    """
+    result = _verification_call(query, {"input": {"email": email.strip().lower()}}, "resendEmailVerification", caller)
+    _raise_verification_errors(result)
+    if not isinstance(result.get("message"), str):
+        raise VerificationError("Verification upstream failed", "UPSTREAM_FAILURE")
+    return {"message": result["message"]}
 
 
 def revoke_operation_key(op_key):
