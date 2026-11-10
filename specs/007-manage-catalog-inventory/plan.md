@@ -1,9 +1,9 @@
 # Plan: CU-A01 — Contrato e integración de catálogo e inventario en BFF
 
 Owner: `bgg-shop-bff`
-Spec de producto: [`specs/006-manage-catalog-inventory/spec.md`](../../specs/006-manage-catalog-inventory/spec.md)
-Contexto BFF: [`007-manage-catalog-inventory-bff.md`](./007-manage-catalog-inventory-bff.md)
-Contexto de consumo: [`bgg-shop-frontend/specs/007-manage-catalog-inventory-frontend.md`](../../bgg-shop-frontend/specs/007-manage-catalog-inventory-frontend.md)
+Spec de producto: [`specs/006-manage-catalog-inventory/spec.md`](../../../specs/006-manage-catalog-inventory/spec.md)
+Contexto BFF: [`bff.md`](./bff.md)
+Contexto de consumo: [`bgg-shop-frontend/specs/007-manage-catalog-inventory/frontend.md`](../../../bgg-shop-frontend/specs/007-manage-catalog-inventory/frontend.md)
 
 ## Estado y objetivo
 
@@ -232,7 +232,7 @@ validación para cada punto; no completar los espacios con supuestos:
 2. Actualizar la documentación BFF pertinente y referenciar OpenAPI como fuente
    del contrato HTTP.
 3. Ejecutar los comandos existentes documentados en
-   [`tests/CONTRACTS_README.md`](../tests/CONTRACTS_README.md) y los tests
+   [`tests/CONTRACTS_README.md`](../../tests/CONTRACTS_README.md) y los tests
    administrativos pertinentes. Registrar resultados reales; no atribuir
    verificación a checks no ejecutados.
 
@@ -260,7 +260,7 @@ validación para cada punto; no completar los espacios con supuestos:
   `bgg-shop-bff/src/services.py`, `bgg-shop-bff/src/proxy.py` y
   `bgg-shop-bff/tests/test_admin*.py`.
 - Expectativas de consumidor, todavía no contrato:
-  `bgg-shop-frontend/specs/007-manage-catalog-inventory-frontend.md`.
+  `bgg-shop-frontend/specs/007-manage-catalog-inventory/frontend.md`.
 - No se incluyen cambios Core ni frontend, un nuevo almacenamiento BFF, caché o
   eventos sin una necesidad/contrato aprobado, ni cambios al OpenAPI en esta
   tarea de planificación.

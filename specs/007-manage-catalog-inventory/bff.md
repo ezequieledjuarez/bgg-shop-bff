@@ -1,6 +1,6 @@
 # CU-A01 — BFF Responsibilities (Flask)
 
-Reference: ../007-manage-catalog-inventory/spec.md
+Reference: ../../../specs/006-manage-catalog-inventory/spec.md
 
 ## Purpose
 Actuar como capa de orquestación y adaptación entre el Core (fuente de verdad) y el Frontend, implementando validaciones de entrada, control de permisos administrativos y transformación de contratos.
