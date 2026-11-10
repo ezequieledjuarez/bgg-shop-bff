@@ -122,8 +122,14 @@ paths:
     post:
       tags:
       - Authentication
-      summary: Register a customer account
-      description: Creates a local customer account using email and password credentials.
+      summary: Register a pending customer account
+      description: >-
+        Creates a local customer account in the PENDING email-verification state
+        without signing in. Core commits the account and its verification challenge
+        together, then submits one verification message after commit. A delivery
+        failure after commit still returns 201 with delivery_status UNCONFIRMED.
+        A duplicate email stays 409 and never implicitly resends. No session,
+        credential or cookie is issued. Every response is non-cacheable.
       operationId: registerAccount
       requestBody:
         required: true
@@ -133,19 +139,39 @@ paths:
               $ref: '#/components/schemas/RegisterRequest'
       responses:
         '201':
-          description: Customer account created.
+          description: Pending customer account created; message submission is not proof of delivery.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/AuthNoStore'
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/RegisterResponse'
+              example:
+                user:
+                  id: '123'
+                  email: player@example.test
+                  first_name: Test
+                  last_name: Player
+                  is_active: true
+                verification:
+                  state: PENDING
+                  delivery_status: UNCONFIRMED
+                  message: Verify your email before signing in. Delivery is not guaranteed; you can request another message.
         '400':
           description: Request body or registration data is invalid.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/AuthNoStore'
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/AuthErrorResponse'
         '409':
-          description: An account with the email already exists.
+          description: An account with the email already exists; no message is resent.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/AuthNoStore'
           content:
             application/json:
               schema:
@@ -153,6 +179,9 @@ paths:
         '502':
           description: The BFF could not obtain a valid response from the Core GraphQL
             service.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/AuthNoStore'
           content:
             application/json:
               schema:
@@ -199,19 +228,44 @@ paths:
                 $ref: '#/components/schemas/LoginResponse'
         '400':
           description: Request body is invalid.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/AuthNoStore'
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/AuthErrorResponse'
         '401':
-          description: Email or password is invalid.
+          description: Email or password is invalid, or the account is administratively inactive.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/AuthNoStore'
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/AuthErrorResponse'
+        '403':
+          description: >-
+            The password was valid but the email is not verified yet
+            (EMAIL_NOT_VERIFIED). No token, cookie, operation key or guest-cart
+            merge occurs and the guest cart cookie is retained.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/AuthNoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthErrorResponse'
+              example:
+                errors:
+                - code: EMAIL_NOT_VERIFIED
+                  message: Verify your email before signing in.
         '502':
           description: The BFF could not obtain a valid response from the Core GraphQL
             service.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/AuthNoStore'
           content:
             application/json:
               schema:
@@ -254,7 +308,10 @@ paths:
       description: >-
         Uses the refresh_token cookie or an optional request body token. A nonempty
         body token takes precedence. On success, a returned refresh token is rotated
-        in an HttpOnly cookie and only the access token is returned in JSON.
+        in an HttpOnly cookie and only the access token is returned in JSON. Core
+        validates that the stored subject is still active and either email-verified
+        or a legacy-exempt account before rotating; an ineligible subject is
+        rejected with the same 401 detail shape.
       operationId: refreshAccessToken
       security:
       - {}
@@ -294,6 +351,118 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/AuthRefreshErrorResponse'
+  /api/v1/auth/email-verification/confirm:
+    post:
+      tags:
+      - Authentication
+      summary: Confirm email ownership with an explicit action
+      description: >-
+        Public; no bearer token or operation key is required. The body carries only
+        the verification token (43 base64url characters). All missing, malformed,
+        tampered, unknown, consumed, replaced and expired tokens return the same
+        400 outcome. At most ten invalid attempts per caller in any rolling 900
+        seconds; attempt eleven returns 429 and a valid token is not processed
+        until the caller is allowed again. Confirmation never signs the user in.
+        GET and HEAD never confirm and return 405. Every response is non-cacheable
+        and no-referrer. The caller identity is derived server-side from the peer
+        address and is never accepted from the request.
+      operationId: confirmEmailVerification
+      security:
+      - {}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ConfirmEmailVerificationRequest'
+            example:
+              token: <VERIFICATION_TOKEN>
+      responses:
+        '200':
+          description: Exactly one account was verified atomically; no credentials or user are returned.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/AuthNoStore'
+            Referrer-Policy:
+              $ref: '#/components/headers/NoReferrer'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConfirmEmailVerificationResponse'
+        '400':
+          description: One generic unusable-link outcome with no owner, token or reason detail.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/AuthNoStore'
+            Referrer-Policy:
+              $ref: '#/components/headers/NoReferrer'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthErrorResponse'
+              example:
+                errors:
+                - code: INVALID_VERIFICATION_TOKEN
+                  message: This link cannot be used. Sign in or request another verification message.
+        '405':
+          $ref: '#/components/responses/VerificationMethodNotAllowed'
+        '429':
+          $ref: '#/components/responses/VerificationThrottled'
+        '502':
+          $ref: '#/components/responses/VerificationUpstream'
+        '503':
+          $ref: '#/components/responses/VerificationUnavailable'
+  /api/v1/auth/email-verification/resend:
+    post:
+      tags:
+      - Authentication
+      summary: Request another verification message with a neutral acknowledgment
+      description: >-
+        Public; no bearer token or operation key is required. Every well-formed
+        email receives the same 202 body whether the account is pending, verified,
+        legacy-exempt or nonexistent, including recipient suppression and delivery
+        failure. Ten well-formed requests per caller in any rolling 3600 seconds;
+        the eleventh returns 429 independent of membership. Recipient rules are
+        applied inside Core without disclosure: 120 seconds since the latest
+        issuance and at most two replacement issuances per rolling 3600 seconds. A
+        replacement invalidates every older token and an older token is never
+        restored. No automatic retry. Every response is non-cacheable.
+      operationId: resendEmailVerification
+      security:
+      - {}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ResendEmailVerificationRequest'
+      responses:
+        '202':
+          description: Request acknowledged; not a claim about account existence or delivery.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/AuthNoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResendEmailVerificationResponse'
+        '400':
+          description: The email is malformed; the submitted value is not echoed.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/AuthNoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthErrorResponse'
+        '405':
+          $ref: '#/components/responses/VerificationMethodNotAllowed'
+        '429':
+          $ref: '#/components/responses/VerificationThrottled'
+        '502':
+          $ref: '#/components/responses/VerificationUpstream'
+        '503':
+          $ref: '#/components/responses/VerificationUnavailable'
   /api/v1/product-categories:
     get:
       tags:
@@ -3065,6 +3234,26 @@ components:
         default: 50
       example: 50
   headers:
+    AuthNoStore:
+      required: true
+      description: Prevents caching of authentication and verification outcomes.
+      schema:
+        type: string
+        enum:
+        - no-store
+    NoReferrer:
+      required: true
+      description: Prevents the verification page from leaking referrers.
+      schema:
+        type: string
+        enum:
+        - no-referrer
+    RetryAfter:
+      required: true
+      description: Whole seconds, rounded up, until the caller limit permits another attempt. Never reveals recipient quota.
+      schema:
+        type: integer
+        minimum: 1
     ChatNoStore:
       required: true
       description: Prevents caching of private chat content and session metadata.
@@ -3092,6 +3281,61 @@ components:
         enum:
         - no-store
   responses:
+    VerificationMethodNotAllowed:
+      description: Only POST is supported; the request has no side effects.
+      headers:
+        Cache-Control:
+          $ref: '#/components/headers/AuthNoStore'
+        Allow:
+          description: Supported methods.
+          schema:
+            type: string
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/AuthErrorResponse'
+    VerificationThrottled:
+      description: The caller limit is reached, independent of email membership or token validity.
+      headers:
+        Cache-Control:
+          $ref: '#/components/headers/AuthNoStore'
+        Retry-After:
+          $ref: '#/components/headers/RetryAfter'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/VerificationThrottledResponse'
+          example:
+            errors:
+            - code: RATE_LIMITED
+              message: Too many attempts. Try again later.
+            retry_after_seconds: 120
+    VerificationUpstream:
+      description: Core is unreachable or returned an invalid response; the outcome may be unknown and is never retried automatically.
+      headers:
+        Cache-Control:
+          $ref: '#/components/headers/AuthNoStore'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/AuthErrorResponse'
+          example:
+            errors:
+            - code: UPSTREAM_FAILURE
+              message: The request could not be completed. Try again later.
+    VerificationUnavailable:
+      description: Limit or state storage or the trusted caller context is unavailable; fail closed with no send or consume.
+      headers:
+        Cache-Control:
+          $ref: '#/components/headers/AuthNoStore'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/AuthErrorResponse'
+          example:
+            errors:
+            - code: VERIFICATION_UNAVAILABLE
+              message: Verification is temporarily unavailable. Try again later.
     ChatInvalidRequest:
       description: >-
         The message is blank or exceeds 2,000 characters. The response does not
@@ -3395,6 +3639,84 @@ components:
           description: Product BGG ID for product or stock events; promotion ID for promotion events.
           minLength: 1
           maxLength: 128
+    ConfirmEmailVerificationRequest:
+      type: object
+      additionalProperties: false
+      required:
+      - token
+      properties:
+        token:
+          type: string
+          minLength: 43
+          maxLength: 43
+          pattern: ^[A-Za-z0-9_-]{43}$
+          writeOnly: true
+    ConfirmEmailVerificationResponse:
+      type: object
+      additionalProperties: false
+      required:
+      - verified
+      - message
+      properties:
+        verified:
+          type: boolean
+          enum:
+          - true
+        message:
+          type: string
+    ResendEmailVerificationRequest:
+      type: object
+      additionalProperties: false
+      required:
+      - email
+      properties:
+        email:
+          type: string
+          format: email
+          minLength: 1
+          maxLength: 254
+    ResendEmailVerificationResponse:
+      type: object
+      additionalProperties: false
+      required:
+      - message
+      properties:
+        message:
+          type: string
+    VerificationThrottledResponse:
+      type: object
+      additionalProperties: false
+      required:
+      - errors
+      - retry_after_seconds
+      properties:
+        errors:
+          type: array
+          items:
+            $ref: '#/components/schemas/AuthError'
+        retry_after_seconds:
+          type: integer
+          minimum: 1
+    RegistrationVerification:
+      type: object
+      additionalProperties: false
+      required:
+      - state
+      - delivery_status
+      - message
+      properties:
+        state:
+          type: string
+          enum:
+          - PENDING
+        delivery_status:
+          type: string
+          description: SUBMITTED means the transport accepted the message, not inbox delivery.
+          enum:
+          - SUBMITTED
+          - UNCONFIRMED
+        message:
+          type: string
     AuthRefreshRequest:
       type: object
       properties:
@@ -3775,6 +4097,8 @@ components:
         password:
           type: string
           format: password
+          description: Must include at least one ASCII uppercase letter, ASCII lowercase letter, ASCII digit, and printable ASCII punctuation character (not whitespace).
+          pattern: '^(?=[\s\S]*[A-Z])(?=[\s\S]*[a-z])(?=[\s\S]*[0-9])(?=[\s\S]*[\x21-\x2F\x3A-\x40\x5B-\x60\x7B-\x7E])[\s\S]*$'
           minLength: 8
           maxLength: 128
           writeOnly: true
@@ -3901,6 +4225,7 @@ components:
           type: string
         is_active:
           type: boolean
+          description: Administrative activation only; true does not imply mailbox verification.
     OperationSession:
       type: object
       required: [id, ops, issued_at, revoked]
@@ -3991,14 +4316,15 @@ components:
             $ref: '#/components/schemas/AuthError'
     RegisterResponse:
       type: object
+      additionalProperties: false
       required:
       - user
+      - verification
       properties:
         user:
           $ref: '#/components/schemas/AuthUser'
-        session:
-          $ref: '#/components/schemas/AuthSession'
-          nullable: true
+        verification:
+          $ref: '#/components/schemas/RegistrationVerification'
     LoginResponse:
       type: object
       required:

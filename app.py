@@ -14,6 +14,7 @@ from werkzeug.exceptions import HTTPException, RequestEntityTooLarge
 from src.controllers import (
     add_cart_item as add_cart_item_controller,
     auth_request,
+    verification_request,
     checkout as checkout_controller,
     confirm_payment as confirm_payment_controller,
     create_review as create_review_controller,
@@ -60,6 +61,8 @@ from src.services import (
     get_product_detail,
     list_products,
     register_account,
+    confirm_email_verification,
+    resend_email_verification,
     remove_from_cart,
     update_cart_quantity,
     add_to_wishlist,
@@ -542,6 +545,16 @@ def purchase_invoice(order_id):
 @app.route("/api/v1/auth/register", methods=["POST"])
 def register():
     return auth_request(register_account, 201)
+
+
+@app.route("/api/v1/auth/email-verification/confirm", methods=["GET", "POST", "PUT", "PATCH", "DELETE"])
+def confirm_email():
+    return verification_request(confirm_email_verification, "token", 200, {"Referrer-Policy": "no-referrer"})
+
+
+@app.route("/api/v1/auth/email-verification/resend", methods=["GET", "POST", "PUT", "PATCH", "DELETE"])
+def resend_email():
+    return verification_request(resend_email_verification, "email", 202)
 
 
 @app.route("/api/v1/auth/me", methods=["GET"])

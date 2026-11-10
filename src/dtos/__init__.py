@@ -1,4 +1,4 @@
-from .auth import AuthRequest, AuthResponse, SessionDto, UserDto
+from .auth import AuthRequest, AuthResponse, SessionDto, UserDto, VerificationDto
 from .cart import CartItemRequestDto, CartResponseDto
 from .orders import CheckoutRequestDto, ConfirmPaymentRequestDto
 from .products import (
@@ -23,5 +23,6 @@ __all__ = [
     "ProductQuery",
     "SessionDto",
     "UserDto",
+    "VerificationDto",
     "WishlistAddRequestDto",
 ]

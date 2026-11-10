@@ -51,6 +51,30 @@ La especificación completa del caso de uso, incluyendo ejemplos, mapeos y
 decisiones de seguridad, está en
 [`docs/CU-C01-AUTHENTICATION-CHANGES.md`](../docs/CU-C01-AUTHENTICATION-CHANGES.md).
 
+### Verificación de correo (`016-email-verification`)
+
+El registro responde `201` con `user` y `verification` (`PENDING`) pero nunca
+con sesión; el login de una cuenta pendiente responde `403 EMAIL_NOT_VERIFIED`
+sin tokens, cookies ni fusión del carrito invitado. Las cuentas previas a la
+función quedan exentas y las deshabilitadas siguen deshabilitadas.
+
+- `POST /api/v1/auth/email-verification/confirm` consume el token solo con un
+  POST explícito (`200` o un único `400` genérico); `GET`/`HEAD` devuelven `405`.
+- `POST /api/v1/auth/email-verification/resend` responde `202` neutral.
+- Límites: 120 s de enfriamiento y 2 reenvíos por destinatario por hora, 10
+  solicitudes de reenvío por llamador por hora y 10 confirmaciones inválidas por
+  llamador cada 900 s (`429` con `Retry-After`).
+- El llamador se deriva solo de `request.remote_addr` (nunca de cabeceras
+  reenviadas) y el BFF se autentica ante el Core con `OPKEY_INTERNAL_SECRET`
+  (mínimo 32 bytes); si falta responde `503 VERIFICATION_UNAVAILABLE`.
+- El BFF no carga archivos `.env`; todas las variables vienen del entorno.
+
+Contrato canónico: [`specs/openapi.yaml`](specs/openapi.yaml). Pruebas herméticas:
+
+```bash
+cd bgg-shop-bff && PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. python -m pytest -q -p no:cacheprovider tests/test_email_verification.py tests/test_services_email_verification_contract.py
+```
+
 ### `GET /api/v1/auth/me`
 
 Devuelve únicamente `is_staff` e `is_superuser`, consultados desde el estado

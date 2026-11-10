@@ -1,4 +1,4 @@
-from .auth_controller import auth_request
+from .auth_controller import auth_request, verification_request
 from .cart_controller import add_cart_item, read_cart, remove_cart_item, update_cart_item
 from .health_controller import health
 from .products_controller import products
@@ -26,6 +26,7 @@ __all__ = [
 	"remove_cart_item",
 	"update_cart_item",
 	"auth_request",
+	"verification_request",
 	"health",
 	"products",
 	"product_detail",

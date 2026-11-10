@@ -51,20 +51,39 @@ class SessionDto:
 
 
 @dataclass(frozen=True)
+class VerificationDto:
+    state: str
+    delivery_status: str
+    message: str
+
+    @classmethod
+    def from_dict(cls, value: dict[str, Any]) -> "VerificationDto":
+        return cls(**value)
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
 class AuthResponse:
     user: UserDto
     session: SessionDto | None = None
+    verification: VerificationDto | None = None
 
     @classmethod
     def from_dict(cls, value: dict[str, Any]) -> "AuthResponse":
         session = value.get("session")
+        verification = value.get("verification")
         return cls(
             user=UserDto.from_dict(value["user"]),
             session=SessionDto.from_dict(session) if session else None,
+            verification=VerificationDto.from_dict(verification) if verification else None,
         )
 
     def to_dict(self) -> dict[str, Any]:
         result = {"user": self.user.to_dict()}
         if self.session is not None:
             result["session"] = self.session.to_dict()
+        if self.verification is not None:
+            result["verification"] = self.verification.to_dict()
         return result
