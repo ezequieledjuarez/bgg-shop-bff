@@ -6,13 +6,36 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import ModuleType
 
+import yaml
 from click.testing import CliRunner
 from flask import Flask
 from flask.cli import cli
 
 
 BFF = Path(__file__).resolve().parents[1]
+REPOSITORY_ROOT = BFF.parent
 LAUNCHER = BFF / "scripts" / "run_local.sh"
+
+
+def test_compose_ollama_is_private_and_reachable_only_from_bff():
+    compose = yaml.safe_load(
+        (REPOSITORY_ROOT / "podman-compose.yaml").read_text(encoding="utf-8")
+    )
+    services = compose["services"]
+    bff = services["bff"]
+    ollama = services["ollama"]
+
+    assert ollama["image"] == "docker.io/ollama/ollama"
+    assert "ports" not in ollama
+    assert ollama["environment"]["OLLAMA_HOST"] == "0.0.0.0:11434"
+    assert "ollama_models:/root/.ollama" in ollama["volumes"]
+    assert ollama["networks"] == ["chat-models"]
+    assert set(bff["networks"]) == {"default", "chat-models"}
+    assert compose["networks"]["chat-models"].get("internal") is not True
+    assert bff["environment"]["CHAT_OLLAMA_BASE_URL"] == "http://ollama:11434"
+    assert bff["depends_on"]["ollama"]["condition"] == "service_healthy"
+    assert ollama["healthcheck"]["test"] == ["CMD", "ollama", "list"]
+    assert "ollama_models" in compose["volumes"]
 
 
 def test_launcher_resolves_paths_without_sourcing_or_overriding_environment():

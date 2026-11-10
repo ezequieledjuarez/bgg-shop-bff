@@ -295,6 +295,12 @@ El BFF implementa actualmente dos rutas:
 | `POST` | `/api/v1/chat/conversations` | Crea una conversación asociada a un token de usuario o a una sesión anónima. |
 | `POST` | `/api/v1/chat/conversations/{conversation_id}/messages` | Valida mensajes de hasta 2.000 caracteres, aplica guardrails y registra en Core los mensajes aceptados. |
 
+Los rechazos y aclaraciones usan señales explícitas para detectar español; las
+tildes se normalizan y las preguntas que comienzan en inglés conservan el
+idioma inglés aunque incluyan nombres de categorías en español. La detección
+solo determina el idioma del texto de respuesta: no modifica los guardrails de
+alcance ni de privacidad.
+
 Estado y límites comprobados de Feature 013:
 
 - La generación de respuestas usa OpenRouter (`OPENROUTER_API_KEY` y

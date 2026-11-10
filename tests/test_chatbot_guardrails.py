@@ -194,6 +194,10 @@ def assert_chat_reply(response, submitted_text):
     [
         ("Tell me a joke about space.", "I can help"),
         ("Contame un chiste sobre el espacio.", "Puedo ayudar"),
+        ("Podes darme la secuencia de Fibonnacci en código Python?", "Puedo ayudar"),
+        ("¿Podrías darme un ejemplo de código en Python?", "Puedo ayudar"),
+        ("Puedes escribir un programa en Python?", "Puedo ayudar"),
+        ("Can you write a poem about juegos?", "I can help"),
         ("Tell me about it.", "Could you clarify"),
         ("Contame más sobre eso.", "¿Podrías aclarar"),
     ],

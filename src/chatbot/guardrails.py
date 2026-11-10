@@ -95,6 +95,7 @@ def message_language(message):
     if "¿" in message or re.search(
         r"\b(?:que|como|cuando|donde|tienda|pago|juegos?|jugadores?|"
         r"recom(?:end|iend)\w*|sug\w*|contame|cuentame|decime|dime|hablame|"
+        r"podes|puedes|podrias|podria|podrian|dame|darme|escribe|escribir|"
         r"chiste|clima|receta|politica|poema|adivinanza|"
         r"envios?|devoluciones?|mi|mis|contrasena|cuenta|"
         r"pedido|compre|pague|tengo|padezco|sufro|diagnosticaron|"

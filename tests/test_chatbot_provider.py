@@ -3,11 +3,50 @@ import pytest
 
 from src.chatbot.provider import (
     OpenRouterWithLocalFallbackProvider,
+    local_ollama_base_url,
 )
 from src.chatbot.service import ChatbotServiceUnavailable, GroundedAnswerService
 
 
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
+
+
+@pytest.mark.parametrize(
+    ("configured_url", "expected_url"),
+    [
+        ("http://localhost:11434", "http://localhost:11434"),
+        ("https://127.0.0.1:11434/", "https://127.0.0.1:11434"),
+        ("http://[::1]:11434", "http://[::1]:11434"),
+        ("http://ollama:11434", "http://ollama:11434"),
+        ("http://ollama:11434/", "http://ollama:11434"),
+    ],
+)
+def test_local_ollama_base_url_accepts_loopback_and_compose_service(
+    configured_url, expected_url
+):
+    assert local_ollama_base_url(configured_url) == expected_url
+
+
+@pytest.mark.parametrize(
+    "configured_url",
+    [
+        "http://ollama:11433",
+        "https://ollama:11434",
+        "http://ollama:11434/api",
+        "http://ollama:11434/?model=synthetic",
+        "http://ollama:11434/#fragment",
+        "http://user@ollama:11434",
+        "http://host.containers.internal:11434",
+        "http://192.168.1.20:11434",
+        "http://example.test:11434",
+        "http://localhost:bad",
+    ],
+)
+def test_local_ollama_base_url_rejects_nonlocal_or_noncanonical_urls(
+    configured_url,
+):
+    with pytest.raises(ValueError, match="Ollama must use a local HTTP endpoint"):
+        local_ollama_base_url(configured_url)
 
 
 class FakeLocalProvider:

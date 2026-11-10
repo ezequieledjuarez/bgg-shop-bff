@@ -25,8 +25,19 @@ def local_ollama_base_url(value=None):
             is_loopback = ipaddress.ip_address(hostname).is_loopback
         except ValueError:
             is_loopback = False
+    try:
+        parsed.port
+    except ValueError:
+        invalid_port = True
+    else:
+        invalid_port = False
+    is_compose_ollama = value in {
+        "http://ollama:11434",
+        "http://ollama:11434/",
+    }
     if (
-        not is_loopback
+        (not is_loopback and not is_compose_ollama)
+        or invalid_port
         or parsed.scheme not in {"http", "https"}
         or parsed.username
         or parsed.password
