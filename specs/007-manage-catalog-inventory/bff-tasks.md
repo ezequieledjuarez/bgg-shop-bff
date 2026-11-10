@@ -2,9 +2,9 @@
 
 **Alcance**: solo `bgg-shop-bff`. La implementación del frontend está pausada
 hasta disponer del contrato BFF aprobado.  
-**Plan**: [`007-manage-catalog-inventory-plan.md`](./007-manage-catalog-inventory-plan.md)  
-**Spec de producto**: [`../../specs/006-manage-catalog-inventory/spec.md`](../../specs/006-manage-catalog-inventory/spec.md)  
-**Contrato actual**: [`openapi.yaml`](./openapi.yaml)
+**Plan**: [`plan.md`](./plan.md)
+**Spec de producto**: [`../../../specs/006-manage-catalog-inventory/spec.md`](../../../specs/006-manage-catalog-inventory/spec.md)
+**Contrato actual**: [`openapi.yaml`](../openapi.yaml)
 
 ## Convenciones
 
@@ -23,7 +23,7 @@ hasta disponer del contrato BFF aprobado.
 ## Estado consolidado — 2026-11-01
 
 Este archivo desglosa trabajo BFF y no debe sumarse como diez tareas adicionales
-al [recuento general](../../specs/007-manage-catalog-inventory/tasks.md). Las
+al [recuento general](../../../specs/007-manage-catalog-inventory/tasks.md). Las
 casillas permanecen abiertas porque sus criterios abarcan más que stock.
 
 Actualización del 2026-11-02: la lista de promociones y la consulta pública de
@@ -95,14 +95,14 @@ necesidades funcionales antes de congelar la API.
     auditoría. No interpretar la presencia de código como contrato aprobado.
   - **Aceptación**: una matriz de cobertura identifica explícitamente
     coincidencias, brechas y discrepancias con el plan y
-    `../../bgg-shop-frontend/specs/007-manage-catalog-inventory-frontend.md`; no
+    `../../../bgg-shop-frontend/specs/007-manage-catalog-inventory/frontend.md`; no
     quedan rutas o comportamientos atribuidos a evidencia inexistente.
 
 - [ ] **T002 — Resolver y registrar decisiones de contrato con producto, Core y consumidor**
   - **Depende de**: T001.
-  - **Referencias**: `../../specs/006-manage-catalog-inventory/spec.md`,
-    `specs/007-manage-catalog-inventory-bff.md`,
-    `../../bgg-shop-frontend/specs/007-manage-catalog-inventory-frontend.md`,
+  - **Referencias**: `../../../specs/006-manage-catalog-inventory/spec.md`,
+    `specs/007-manage-catalog-inventory/bff.md`,
+    `../../../bgg-shop-frontend/specs/007-manage-catalog-inventory/frontend.md`,
     `specs/openapi.yaml`.
   - **Decisión confirmada (2026-10-31)**: las operaciones administrativas
     requieren un usuario activo con `is_staff` o `is_superuser`. Un Vendedor
@@ -245,7 +245,7 @@ necesidades funcionales antes de congelar la API.
     a Core con la ruta y el método; `../bgg-shop-core/opkeys/views.py` exige
     usuario activo y `is_staff` o `is_superuser` para rutas administrativas,
     además de validar la operación permitida. La compatibilidad con JWT figura
-    en `../bgg-shop-core/specs/008-operations-keys-auth.md`. Las pruebas
+    en `../bgg-shop-core/specs/008-operations-keys-auth/notes.md`. Las pruebas
     relacionadas son `tests/test_opkey_middleware.py` y
     `../bgg-shop-core/tests/test_opkeys_internal.py`; no se ejecutaron en esta
     revisión. Falta verificar la autorización y propagación en cada
@@ -396,7 +396,7 @@ cómo verificar el trabajo sin realizar llamadas a servicios reales.
 - [ ] **T010 — Actualizar documentación BFF del contrato y verificación**
   - **Depende de**: T003, T004, T005, T006, T007, T008 y T009.
   - **Referencias**: `README.md`, `specs/openapi.yaml`,
-    `tests/CONTRACTS_README.md`, `specs/007-manage-catalog-inventory-plan.md`.
+    `tests/CONTRACTS_README.md`,     `specs/007-manage-catalog-inventory/plan.md`.
   - **Acción**: documentar capacidades administrativas, autenticación,
     requests/responses y errores desde el OpenAPI aprobado; explicar pruebas y
     comandos existentes. Corregir solo documentación BFF afectada y enlazar la
